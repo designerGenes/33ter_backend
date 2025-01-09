@@ -3,7 +3,8 @@ azure.ai.vision.imageanalysis
 ffmpeg-python
 python-socketio
 flask
-eventlet
 python-dotenv
 rich
 openai
+aiohttp
+zeroconf

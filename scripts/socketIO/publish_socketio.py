@@ -1,35 +1,90 @@
 import asyncio
-import websockets
-import sys
-from websockets.exceptions import ConnectionClosedError
-from dotenv import load_dotenv
+import socketio
+import json
+import sys 
 
-load_dotenv(dotenv_path="../.env")
-
-async def send_data(uri, data):
+# Load server details from the config file
+def load_server_details():
     try:
-        async with websockets.connect(uri) as websocket:
-            await websocket.send(data)
-            print(f"Successfully sent: {data}")
-            response = await websocket.recv()
-            print(f"Server response: {response}")
-    except ConnectionRefusedError:
-        print(f"Error: Could not connect to {uri}")
-        print("Make sure the WebSocket server is running and the URI is correct")
-        sys.exit(1)
-    except ConnectionClosedError:
-        print("Connection closed unexpectedly")
-        sys.exit(1)
+        with open("server_config.json", "r") as f:
+            config = json.load(f)
+            return config["ip"], config["port"], config["room"]
+    except Exception as e:
+        print(f"Error loading server details: {e}")
+        exit(1)
+
+async def send_data(ip, port, room, message):
+    try:
+        # Create a Socket.IO client
+        sio = socketio.AsyncClient()
+
+        # Connect to the server
+        await sio.connect(f"http://{ip}:{port}")
+        print(f"Connected to server at http://{ip}:{port}")
+
+        # Join the room
+        await sio.emit("join_room", {"room": room})
+        print(f"Joined room: {room}")
+
+        # Prepare the message in the correct format
+        message_data = {
+            "room": room,
+            "message": {
+                "plainText": message,
+                "codeBlock": """
+Write a function that takes an array of integers and returns a new array where:
+    •    Numbers divisible by 3 are replaced with "Fizz".
+    •    Numbers divisible by 5 are replaced with "Buzz".
+    •    Numbers divisible by both 3 and 5 are replaced with "FizzBuzz".
+    •    Other numbers remain unchanged.
+
+import Foundation
+
+func fizzBuzzTransform(_ numbers: [Int]) -> [Any] {
+    return numbers.map { number in
+        if number % 3 == 0 && number % 5 == 0 {
+            return "FizzBuzz"
+        } else if number % 3 == 0 {
+            return "Fizz"
+        } else if number % 5 == 0 {
+            return "Buzz"
+        } else {
+            return number
+        }
+    }
+}
+"""
+            }
+        }
+
+        # Send the message to the room
+        await sio.emit("room_message", message_data)
+        print(f"Sent message to room {room}: {json.dumps(message_data, indent=2)}")
+
+        # Wait for a response (optional)
+        @sio.event
+        async def message(data):
+            print(f"Received response from server: {data}")
+            await sio.disconnect()
+
+        # Keep the connection alive for a while
+        await asyncio.sleep(2)
+
     except Exception as e:
         print(f"Unexpected error: {e}")
-        sys.exit(1)
+        exit(1)
+    finally:
+        await sio.disconnect()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python3 publish_to_websocket.py <WebSocket URI> <message>")
-        sys.exit(1)
+    # Load server details from the config file
+    ip, port, room = load_server_details()
 
-    uri = sys.argv[1]
-    data = sys.argv[2]
+    # Get the message from the command line
+    if len(sys.argv) < 2:
+        print("Usage: python3 publish_socketio.py <message>")
+        exit(1)
+    message = sys.argv[1]
 
-    asyncio.run(send_data(uri, data))
+    # Send the message
+    asyncio.run(send_data(ip, port, room, message))

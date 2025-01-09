@@ -1,20 +1,19 @@
 import socketio
-import eventlet
+import asyncio
 import logging
-from flask import Flask
+from aiohttp import web
 import socket
-from dotenv import load_dotenv
-
-load_dotenv(dotenv_path="../.env")
+from zeroconf import ServiceInfo, Zeroconf, IPVersion
+from zeroconf.asyncio import AsyncZeroconf
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Create a Socket.IO server
-sio = socketio.Server(cors_allowed_origins='*')  # Allow all origins for simplicity
-app = Flask(__name__)
-app.wsgi_app = socketio.WSGIApp(sio, app.wsgi_app)
+sio = socketio.AsyncServer(cors_allowed_origins='*')  # Allow all origins for simplicity
+app = web.Application()
+sio.attach(app)
 
 # Get the local IP address dynamically
 def get_local_ip():
@@ -31,50 +30,107 @@ def get_local_ip():
 
 # Store connected clients and rooms
 connected_clients = {}
-rooms = {}
+rooms = {
+    "chatRoom": {  # Default room
+        "clients": set(),
+        "messages": []
+    }
+}
 
 # Event: Client connects
 @sio.event
-def connect(sid, environ):
+async def connect(sid, environ):
     logger.info(f"Client connected: {sid}")
     connected_clients[sid] = {"rooms": []}
+    # Auto-join the default room
+    await join_room(sid, {"room": "chatRoom"})
 
-# Event: Client disconnects
 @sio.event
-def disconnect(sid):
-    logger.info(f"Client disconnected: {sid}")
-    if sid in connected_clients:
-        for room in connected_clients[sid]["rooms"]:
-            sio.leave_room(sid, room)
-            logger.info(f"Client {sid} left room {room}")
-        del connected_clients[sid]
+async def get_rooms(sid):
+    """Return list of available rooms"""
+    available_rooms = list(rooms.keys())
+    await sio.emit("available_rooms", {"rooms": available_rooms}, room=sid)
 
 # Event: Client joins a room
 @sio.event
-def join_room(sid, data):
+async def join_room(sid, data):
     room = data.get("room")
     if room:
-        sio.enter_room(sid, room)
+        if room not in rooms:
+            rooms[room] = {"clients": set(), "messages": []}
+        await sio.enter_room(sid, room)
         connected_clients[sid]["rooms"].append(room)
+        rooms[room]["clients"].add(sid)
         logger.info(f"Client {sid} joined room {room}")
-        sio.emit("room_joined", {"room": room}, room=sid)  # Notify the client
+        await sio.emit("room_joined", {
+            "room": room,
+            "client_count": len(rooms[room]["clients"])
+        }, room=sid)
     else:
         logger.warning(f"Client {sid} attempted to join a room without specifying a room name")
 
+# Event: Client disconnects
+@sio.event
+async def disconnect(sid):
+    logger.info(f"Client disconnected: {sid}")
+    if sid in connected_clients:
+        for room in connected_clients[sid]["rooms"]:
+            if room in rooms and sid in rooms[room]["clients"]:
+                rooms[room]["clients"].remove(sid)
+            await sio.leave_room(sid, room)
+            logger.info(f"Client {sid} left room {room}")
+        del connected_clients[sid]
+
 # Event: Client sends a message to a room
 @sio.event
-def room_message(sid, data):
+async def room_message(sid, data):
     room = data.get("room")
     message = data.get("message")
     if room and message:
         logger.info(f"Client {sid} sent message to room {room}: {message}")
-        sio.emit("room_message", {"message": message}, room=room)  # Broadcast to the room
+        # Forward the message structure as-is
+        await sio.emit("room_message", {"message": message}, room=room)
     else:
         logger.warning(f"Client {sid} sent invalid room message: {data}")
 
+# Broadcast server details using mDNS
+async def broadcast_mdns(ip, port):
+    service_name = "SocketIO Server._socketio._tcp.local."
+    service_info = ServiceInfo(
+        "_socketio._tcp.local.",
+        service_name,
+        addresses=[socket.inet_aton(ip)],
+        port=port,
+        properties={"room": "chatRoom"},  # Optional: Include additional metadata
+    )
+    zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
+    await zeroconf.async_register_service(service_info)
+    logger.info(f"Broadcasting mDNS service: {service_name} at {ip}:{port}")
+    return zeroconf, service_info  # Return both zeroconf and service_info
+
 # Run the server
-if __name__ == "__main__":
+async def start_server():
     local_ip = get_local_ip()
-    port = 3003  # Default port
+    port = 3000  # Default port
+
+    # Broadcast server details using mDNS
+    zeroconf, service_info = await broadcast_mdns(local_ip, port)  # Unpack the returned values
+
     logger.info(f"Starting Socket.IO server on {local_ip}:{port}")
-    eventlet.wsgi.server(eventlet.listen((local_ip, port)), app)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, local_ip, port)
+    await site.start()
+
+    try:
+        while True:
+            await asyncio.sleep(3600)  # Keep the server running
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # Clean up mDNS when the server stops
+        await zeroconf.async_unregister_service(service_info)
+        await zeroconf.async_close()
+
+if __name__ == "__main__":
+    asyncio.run(start_server())
