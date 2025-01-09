@@ -1,0 +1,39 @@
+services:
+  chatterbox:
+    env_file:
+      - .env
+    environment:
+      TZ: UTC
+      AZ_VISION_ENDPOINT: ${AZ_VISION_ENDPOINT}
+      AZ_RESOURCE_KEY: ${AZ_RESOURCE_KEY}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TARGETPLATFORM: linux/arm64
+    platform: linux/arm64
+    container_name: chatterbox
+    volumes:
+      - ../logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: host  # This makes port 8765 automatically available on host network
+    # Note: no need to specify ports when using network_mode: host
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ps", "aux", "|", "grep", "python3", "||", "exit", "1"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      - nginx-rtmp-server
+
+  nginx-rtmp-server:
+    image: tiangolo/nginx-rtmp:latest
+    container_name: nginx-rtmp-server
+    ports:
+      - "1935:1935"
+    restart: unless-stopped
