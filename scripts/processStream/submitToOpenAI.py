@@ -3,21 +3,23 @@ from openai import OpenAI
 import glob
 from dotenv import load_dotenv
 import json
+import requests  # Add this import
 
 load_dotenv()
+
 # Load your API key from an environment variable
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# read the contents of the most recent azure OCR response file
+# Read the contents of the most recent Azure OCR response file
 try:
     # Find all files ending with "_azure_oc_response.json"
-    list_of_files = glob.glob('/app/logs/*_azure_oc_response')
+    list_of_files = glob.glob('/app/logs/*_azure_oc_response.json')
     if not list_of_files:
         raise FileNotFoundError("No Azure OCR response files found in /app/logs/")
 
     latest_file = max(list_of_files, key=os.path.getctime)
     with open(latest_file, "r") as f:
-        raw_word_list = f.read()  # Assuming the JSON file contains an array of strings
+        raw_word_list = json.load(f)  # Assuming the JSON file contains an array of strings
     print(f"Loaded OCR data from: {latest_file}")
 except Exception as e:
     print(f"Error reading Azure OCR response file: {e}")
@@ -53,22 +55,18 @@ Here is the coding challenge and related details:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# now time to call our good friend Chatty McG
-
 def submit_for_extraction(prompt):
     try:
-        # Step 3: Send the prompt to the API
         response = client.chat.completions.create(
-            model="gpt-4o-mini-2024-07-18",  # Fixed model name
+            model="gpt-4",  # Use the correct model name
             messages=[
                 {"role": "system", "content": OPENAI_SYSTEM_MESSAGE},
                 {"role": "user", "content": f"{OPENAI_PROMPT_EXTRACT}\n{prompt}"}
             ],
-            max_tokens=10000,  # Limit the response length
-            temperature=0.7  # Control the randomness of the response
+            max_tokens=10000,
+            temperature=0.7
         )
         print("Received coding challenge response: ")
-        # Save the extracted challenge to a file
         with open('/app/logs/extracted_challenge.txt', 'w') as f:
             f.write(response.choices[0].message.content)
         return response.choices[0].message.content
@@ -78,18 +76,16 @@ def submit_for_extraction(prompt):
 
 def submit_for_code_solution(prompt):
     try:
-        # Step 3: Send the prompt to the API
         response = client.chat.completions.create(
-            model="gpt-4o-mini-2024-07-18",  # Fixed model name
+            model="gpt-4",  # Use the correct model name
             messages=[
                 {"role": "system", "content": OPENAI_SYSTEM_MESSAGE},
                 {"role": "user", "content": f"{OPENAI_PROMPT_SOLVE}\n\n{prompt}"}
             ],
-            max_tokens=10000,  # Limit the response length
-            temperature=0.7  # Control the randomness of the response
+            max_tokens=10000,
+            temperature=0.7
         )
         print("Received coding challenge SOLUTION: ")
-        # Save the solution to a file
         with open('/app/logs/solution.txt', 'w') as f:
             f.write(response.choices[0].message.content)
         return response.choices[0].message.content
@@ -97,14 +93,22 @@ def submit_for_code_solution(prompt):
         print(f"Error in solution generation: {e}")
         return None
 
-
 # Step 4: Call the function
-
 if raw_word_list is not None:
-    extracted = submit_for_extraction(raw_word_list)
+    extracted = submit_for_extraction(json.dumps(raw_word_list))
     if extracted:
         solution = submit_for_code_solution(extracted)
-        if not solution:
+        if solution:
+            # Send the solution to the Socket.IO server (Container #3)
+            response = requests.post(
+                "http://container3:5002/broadcast",
+                json={"message": solution}
+            )
+            if response.status_code == 200:
+                print("Solution sent to Socket.IO server")
+            else:
+                print("Failed to send solution to Socket.IO server")
+        else:
             print("Failed to generate solution")
     else:
         print("Failed to extract challenge")

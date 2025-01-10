@@ -1,0 +1,24 @@
+# Dockerfile for Container #3 (Socket.IO Server)
+
+# Use a base image with Python installed
+FROM python:3.9-slim
+
+# Set the working directory
+WORKDIR /app
+
+# Install system dependencies (if needed)
+RUN apt-get update && apt-get install -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the scripts into the container
+COPY scripts/socketIO/server_socketio.py /app/server_socketio.py
+COPY scripts/socketIO/publish_socketio.py /app/publish_socketio.py
+
+# Install Python dependencies
+RUN pip3 install python-socketio flask-socketio eventlet requests
+
+# Expose the port for the Socket.IO server
+EXPOSE 5002
+
+# Command to run the Socket.IO server
+CMD ["python3", "/app/server_socketio.py"]

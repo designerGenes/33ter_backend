@@ -1,12 +1,17 @@
 import asyncio
 import socketio
 import json
-import sys 
+import sys
+import os  # Add this import
 
 # Load server details from the config file
 def load_server_details():
     try:
-        with open("server_config.json", "r") as f:
+        config_path = "/app/server_config.json"  # Path to the generated config file
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Config file not found at {config_path}")
+
+        with open(config_path, "r") as f:
             config = json.load(f)
             return config["ip"], config["port"], config["room"]
     except Exception as e:
@@ -29,32 +34,7 @@ async def send_data(ip, port, room, message):
         # Prepare the message in the correct format
         message_data = {
             "room": room,
-            "message": {
-                "plainText": message,
-                "codeBlock": """
-Write a function that takes an array of integers and returns a new array where:
-    •    Numbers divisible by 3 are replaced with "Fizz".
-    •    Numbers divisible by 5 are replaced with "Buzz".
-    •    Numbers divisible by both 3 and 5 are replaced with "FizzBuzz".
-    •    Other numbers remain unchanged.
-
-import Foundation
-
-func fizzBuzzTransform(_ numbers: [Int]) -> [Any] {
-    return numbers.map { number in
-        if number % 3 == 0 && number % 5 == 0 {
-            return "FizzBuzz"
-        } else if number % 3 == 0 {
-            return "Fizz"
-        } else if number % 5 == 0 {
-            return "Buzz"
-        } else {
-            return number
-        }
-    }
-}
-"""
-            }
+            "message": message  # Send the message directly (no nested structure)
         }
 
         # Send the message to the room

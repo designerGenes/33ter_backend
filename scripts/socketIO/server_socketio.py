@@ -3,8 +3,10 @@ import asyncio
 import logging
 from aiohttp import web
 import socket
-from zeroconf import ServiceInfo, Zeroconf, IPVersion
+from zeroconf import ServiceInfo, IPVersion
 from zeroconf.asyncio import AsyncZeroconf
+import json  # Add this import
+import os  # Add this import
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +28,7 @@ def get_local_ip():
         return local_ip
     except Exception as e:
         logger.error(f"Could not determine local IP address: {e}")
-        return "127.0.0.1"  # Fallback to localhost
+        return "0.0.0.0"  # Fallback to all interfaces
 
 # Store connected clients and rooms
 connected_clients = {}
@@ -108,10 +110,24 @@ async def broadcast_mdns(ip, port):
     logger.info(f"Broadcasting mDNS service: {service_name} at {ip}:{port}")
     return zeroconf, service_info  # Return both zeroconf and service_info
 
+# Generate server_config.json
+def generate_server_config(ip, port, room):
+    config = {
+        "ip": ip,
+        "port": port,
+        "room": room
+    }
+    with open("/app/server_config.json", "w") as f:
+        json.dump(config, f, indent=4)
+    logger.info(f"Generated server_config.json with IP: {ip}, Port: {port}, Room: {room}")
+
 # Run the server
 async def start_server():
     local_ip = get_local_ip()
-    port = 3000  # Default port
+    port = 5002  # Use the port specified in the Dockerfile
+
+    # Generate the server_config.json file
+    generate_server_config(local_ip, port, "chatRoom")
 
     # Broadcast server details using mDNS
     zeroconf, service_info = await broadcast_mdns(local_ip, port)  # Unpack the returned values
