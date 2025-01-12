@@ -1,11 +1,12 @@
 import socketio
 import asyncio
 import logging
-from aiohttp import web
+from aiohttp import web, web_runner  # Correct import for web_runner
 import socket
-from zeroconf import ServiceInfo, IPVersion
+from zeroconf import ServiceInfo, IPVersion  # Correct import for ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 import json  # Add this import
+import os, sys 
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -127,7 +128,7 @@ async def health_handler(request):
 # Run the server
 async def start_server():
     local_ip = get_local_ip()
-    port = os.getenv("SOCKETIO_PORT", 5347)  # Default to 5347 if not set
+    port = int(os.getenv("SOCKETIO_PORT", "5347"))  # Default to 5347 if not set
 
     # Add routes to the app
     app.router.add_get('/health', health_handler)

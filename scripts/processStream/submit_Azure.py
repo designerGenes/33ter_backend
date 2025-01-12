@@ -5,13 +5,11 @@ import json
 from azure.ai.vision.imageanalysis import ImageAnalysisClient
 from azure.ai.vision.imageanalysis.models import VisualFeatures
 from azure.core.credentials import AzureKeyCredential
-from flask import Flask, request, jsonify
 import subprocess
+import sys
 
 # Load environment variables from .env file
 load_dotenv()
-
-app = Flask(__name__)
 
 try:
     AZ_VISION_ENDPOINT = os.getenv("AZ_VISION_ENDPOINT")
@@ -27,19 +25,7 @@ except KeyError:
 client = ImageAnalysisClient(endpoint=AZ_VISION_ENDPOINT,
                              credential=AzureKeyCredential(AZ_RESOURCE_KEY))
 
-@app.route("/process", methods=["POST"])
-def process_screenshot():
-    if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"error": "Empty filename"}), 400
-
-    # Save the file temporarily
-    file_path = f"/app/screenshots/{file.filename}"
-    file.save(file_path)
-
+def process_screenshot(file_path):
     # Extract text (OCR) from the image
     with open(file_path, "rb") as f:
         image_data = f.read()
@@ -52,28 +38,19 @@ def process_screenshot():
 
     # Save the OCR results to a file
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    ocr_output_file = f"/app/logs/{timestamp}_azure_oc_response.json"
+    ocr_output_file = f"/app/logs/{timestamp}_azure_ocr_response.json"
 
     if result.read is not None:
         lines = ["".join(line.text) for line in result.read.blocks[0].lines]
         with open(ocr_output_file, "w") as f:
             json.dump(lines, f)
 
-    # Pass the OCR output file to submit_OpenAI.py
     subprocess.run(["python3", "/app/submit_OpenAI.py", ocr_output_file])
 
-    return jsonify({"status": "success"}), 200
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
-
 if __name__ == "__main__":
-    # Create required directories
-    os.makedirs("/app/screenshots", exist_ok=True)
-    os.makedirs("/app/logs", exist_ok=True)
+    if len(sys.argv) != 2:
+        print("Usage: python submit_Azure.py <file_path>")
+        exit(1)
     
-    try:
-        app.run(host="0.0.0.0", port=5347)
-    except Exception as e:
-        print(f"Error starting server: {e}")
+    file_path = sys.argv[1]
+    process_screenshot(file_path)

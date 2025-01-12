@@ -47,7 +47,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 def submit_for_extraction(prompt):
     try:
         response = client.chat.completions.create(
-            model="gpt-4",  # Use the correct model name
+            model="gpt-4o-mini-2024-07-18",
             messages=[
                 {"role": "system", "content": OPENAI_SYSTEM_MESSAGE},
                 {"role": "user", "content": f"{OPENAI_PROMPT_EXTRACT}\n{prompt}"}
@@ -66,7 +66,7 @@ def submit_for_extraction(prompt):
 def submit_for_code_solution(prompt):
     try:
         response = client.chat.completions.create(
-            model="gpt-4",  # Use the correct model name
+            model="gpt-4o-mini-2024-07-18",  # Use the correct model name
             messages=[
                 {"role": "system", "content": OPENAI_SYSTEM_MESSAGE},
                 {"role": "user", "content": f"{OPENAI_PROMPT_SOLVE}\n\n{prompt}"}

@@ -1,7 +1,4 @@
-# Dockerfile for Container #3 (Socket.IO Server)
-
-# Use a platform-specific base image
-FROM --platform=$TARGETPLATFORM python:3.9-slim
+FROM python:3.9-slim
 
 # Set the working directory
 WORKDIR /app
@@ -18,10 +15,12 @@ COPY scripts/publishMessage/server_socketio.py /app/server_socketio.py
 COPY scripts/publishMessage/publish_socketio.py /app/publish_socketio.py
 
 # Install Python dependencies
-RUN pip3 install python-socketio flask-socketio eventlet requests aiohttp zeroconf
+# Install Python dependencies
+COPY ../req/requirements-publishMessage.txt /app/
+RUN pip3 install -r /app/requirements-publishMessage.txt
 
 # Expose the port for the Socket.IO server
-EXPOSE 5348
+EXPOSE 5347
 
 # Command to run the Socket.IO server
 CMD ["python3", "/app/server_socketio.py"]

@@ -1,17 +1,20 @@
 name: chatterbox
 services:
   process-stream:
-    develop:
-      watch:
-        - action: sync
-          path: scripts/processStream
-          target: /app/scripts
+    
     platform: linux/arm64
     build:
       context: .
-      dockerfile: Dockerfiles/Dockerfile.processStream
+      dockerfile: ./Dockerfiles/Dockerfile.processStream
       platforms:
         - linux/arm64
+    develop:
+      watch:
+        - action: sync+restart
+          path: scripts/processStream
+          target: /app/scripts
+        - action: rebuild
+          path: Dockerfiles/Dockerfile.processStream
     container_name: process-stream
     ports:
       - "5346:5346"
@@ -47,16 +50,18 @@ services:
 
   publish-message:
     platform: linux/arm64
-    develop:
-      watch:
-        - action: sync
-          path: scripts/publishMessage
-          target: /app/scripts
     build:
       context: .
-      dockerfile: Dockerfiles/Dockerfile.publishMessage
+      dockerfile: ./Dockerfiles/Dockerfile.publishMessage
       platforms:
         - linux/arm64
+    develop:
+        watch:
+          - action: sync+restart
+            path: scripts/publishMessage
+            target: /app/scripts
+          - action: rebuild
+            path: Dockerfiles/Dockerfile.publishMessage
     container_name: publish-message
     ports:
       - "5347:5347"

@@ -1,4 +1,4 @@
-FROM --platform=$TARGETPLATFORM python:3.9-slim
+FROM python:3.9-slim
 
 # Set the working directory
 WORKDIR /app
@@ -17,7 +17,8 @@ COPY scripts/processStream/submit_Azure.py /app/
 COPY scripts/processStream/submit_OpenAI.py /app/
 
 # Install Python dependencies
-RUN pip3 install flask requests python-dotenv azure-ai-vision-imageanalysis openai
+COPY ../req/requirements-processStream.txt /app/
+RUN pip3 install -r /app/requirements-processStream.txt
 
 # Create directories for logs
 RUN mkdir -p /app/logs
@@ -26,4 +27,4 @@ RUN mkdir -p /app/logs
 EXPOSE $SERVER_PORT
 
 # Command to run the script
-CMD ["python", "server.py"]
+CMD ["python3", "/app/server.py"]

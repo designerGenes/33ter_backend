@@ -1,0 +1,6 @@
+python-socketio 
+flask-socketio 
+eventlet 
+requests 
+aiohttp 
+zeroconf
