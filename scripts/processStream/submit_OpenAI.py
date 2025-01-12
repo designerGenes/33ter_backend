@@ -10,21 +10,6 @@ load_dotenv()
 # Load your API key from an environment variable
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Read the contents of the most recent Azure OCR response file
-try:
-    # Find all files ending with "_azure_oc_response.json"
-    list_of_files = glob.glob('/app/logs/*_azure_oc_response.json')
-    if not list_of_files:
-        raise FileNotFoundError("No Azure OCR response files found in /app/logs/")
-
-    latest_file = max(list_of_files, key=os.path.getctime)
-    with open(latest_file, "r") as f:
-        raw_word_list = json.load(f)  # Assuming the JSON file contains an array of strings
-    print(f"Loaded OCR data from: {latest_file}")
-except Exception as e:
-    print(f"Error reading Azure OCR response file: {e}")
-    raw_word_list = None
-
 OPENAI_SYSTEM_MESSAGE = """You are a diligent and helpful software developer who excels at solving coding challenges,
 and extracting the text of a coding challenge from a list of semi-related text phrases.
     """
@@ -35,19 +20,22 @@ Your job is to extract the full text of the coding challenge and ONLY the coding
 from the list of words and phrases below:
 """
 
-OPENAI_PROMPT_SOLVE = """
-Now that you have received the text of a coding challenge, create a Python function that solves the coding challenge below.
+# Get the programming language from environment variable, default to Python
+SOLUTION_LANGUAGE = os.getenv("SOLUTION_LANGUAGE", "Python")
+
+OPENAI_PROMPT_SOLVE = f"""
+Now that you have received the text of a coding challenge, create a {SOLUTION_LANGUAGE} function that solves the coding challenge below.
 You should be focused most on conciseness, efficiency, and readability, and second most on lowering time and space complexity.
-You should respond FIRST with your solution to the coding challenge (written in Python),
+You should respond FIRST with your solution to the coding challenge (written in {SOLUTION_LANGUAGE}),
 and then afterwards with a line-by-line explanation of your code.
     Example:
     SOLUTION
-    (full Python solution, written to be as time and space efficient as possible)
+    (full {SOLUTION_LANGUAGE} solution, written to be as time and space efficient as possible)
     (two line breaks)
     EXPLANATION
-    (segment 1 of the same Python solution)
+    (segment 1 of the same {SOLUTION_LANGUAGE} solution)
     EXPLANATION of segment 1 in a conversational tone
-    (segment 2 of the same Python solution, if it exists)
+    (segment 2 of the same {SOLUTION_LANGUAGE} solution, if it exists)
     EXPLANATION of segment 2 in a conversational tone
 
 Here is the coding challenge and related details:
@@ -93,24 +81,39 @@ def submit_for_code_solution(prompt):
         print(f"Error in solution generation: {e}")
         return None
 
-# Step 4: Call the function
-if raw_word_list is not None:
-    extracted = submit_for_extraction(json.dumps(raw_word_list))
-    if extracted:
-        solution = submit_for_code_solution(extracted)
-        if solution:
-            # Send the solution to the Socket.IO server (Container #3)
-            response = requests.post(
-                "http://container3:5002/broadcast",
-                json={"message": solution}
-            )
-            if response.status_code == 200:
-                print("Solution sent to Socket.IO server")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python submit_OpenAI.py <file_path>")
+        exit(1)
+    
+    file_path = sys.argv[1]
+
+    try:
+        with open(file_path, "r") as f:
+            raw_word_list = json.load(f)  # Assuming the JSON file contains an array of strings
+            if raw_word_list is not None:
+                extracted = submit_for_extraction(json.dumps(raw_word_list))
+                if extracted:
+                    solution = submit_for_code_solution(extracted)
+                    if solution:
+                        # Send the solution to the Socket.IO server (Container #2)
+                        SOCKETIO_PORT = os.getenv("SOCKETIO_PORT", 5347)
+                        response = requests.post(
+                            f'http://publish-message:{SOCKETIO_PORT}/broadcast',  # Changed container3 to publish-message for clarity
+                            json={"message": solution}
+                        )
+                        if response.status_code == 200:
+                            print("Solution sent to Socket.IO server")
+                        else:
+                            print("Failed to send solution to Socket.IO server")
+                    else:
+                        print("Failed to generate solution")
+                else:
+                    print("Failed to extract challenge")
             else:
-                print("Failed to send solution to Socket.IO server")
-        else:
-            print("Failed to generate solution")
-    else:
-        print("Failed to extract challenge")
-else:
-    print("Could not load the file")
+                print("Could not load the file")
+        print(f"Loaded OCR data from: {latest_file}")
+    except Exception as e:
+        print(f"Error reading Azure OCR response file: {e}")
+        raw_word_list = None

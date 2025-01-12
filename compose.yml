@@ -1,0 +1,88 @@
+name: chatterbox
+services:
+  process-stream:
+    develop:
+      watch:
+        - action: sync
+          path: scripts/processStream
+          target: /app/scripts
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.processStream
+      platforms:
+        - linux/arm64
+    container_name: process-stream
+    ports:
+      - "5346:5346"
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - AZ_VISION_ENDPOINT=${AZ_VISION_ENDPOINT}
+      - AZ_RESOURCE_KEY=${AZ_RESOURCE_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SOLUTION_LANGUAGE=${SOLUTION_LANGUAGE:-Python}
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONPATH=/app
+      - LOG_LEVEL=DEBUG
+      - SERVER_PORT=5346
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - publish-message
+    networks:
+      - chatterbox-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5346/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  publish-message:
+    platform: linux/arm64
+    develop:
+      watch:
+        - action: sync
+          path: scripts/publishMessage
+          target: /app/scripts
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.publishMessage
+      platforms:
+        - linux/arm64
+    container_name: publish-message
+    ports:
+      - "5347:5347"
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - SOCKETIO_PORT=5347
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONPATH=/app
+      - LOG_LEVEL=DEBUG
+      - SERVER_PORT=5347
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - chatterbox-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5347/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped  # Add restart policy
+
+networks:
+  chatterbox-network:
+    driver: bridge

@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 import datetime
+import json
 from azure.ai.vision.imageanalysis import ImageAnalysisClient
 from azure.ai.vision.imageanalysis.models import VisualFeatures
 from azure.core.credentials import AzureKeyCredential
@@ -58,10 +59,21 @@ def process_screenshot():
         with open(ocr_output_file, "w") as f:
             json.dump(lines, f)
 
-    # Pass the OCR output file to submitToOpenAI.py
-    subprocess.run(["python3", "/app/submitToOpenAI.py", ocr_output_file])
+    # Pass the OCR output file to submit_OpenAI.py
+    subprocess.run(["python3", "/app/submit_OpenAI.py", ocr_output_file])
 
     return jsonify({"status": "success"}), 200
 
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001)
+    # Create required directories
+    os.makedirs("/app/screenshots", exist_ok=True)
+    os.makedirs("/app/logs", exist_ok=True)
+    
+    try:
+        app.run(host="0.0.0.0", port=5347)
+    except Exception as e:
+        print(f"Error starting server: {e}")

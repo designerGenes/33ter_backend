@@ -1,0 +1,29 @@
+FROM --platform=$TARGETPLATFORM python:3.9-slim
+
+# Set the working directory
+WORKDIR /app
+ENV SERVER_PORT=5346
+
+# Install system dependencies (if needed)
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the scripts into the container
+COPY scripts/processStream/server.py /app/
+COPY scripts/processStream/submit_Azure.py /app/
+COPY scripts/processStream/submit_OpenAI.py /app/
+
+# Install Python dependencies
+RUN pip3 install flask requests python-dotenv azure-ai-vision-imageanalysis openai
+
+# Create directories for logs
+RUN mkdir -p /app/logs
+
+# Expose the port for receiving screenshots
+EXPOSE $SERVER_PORT
+
+# Command to run the script
+CMD ["python", "server.py"]

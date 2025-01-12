@@ -6,7 +6,6 @@ import socket
 from zeroconf import ServiceInfo, IPVersion
 from zeroconf.asyncio import AsyncZeroconf
 import json  # Add this import
-import os  # Add this import
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -121,10 +120,17 @@ def generate_server_config(ip, port, room):
         json.dump(config, f, indent=4)
     logger.info(f"Generated server_config.json with IP: {ip}, Port: {port}, Room: {room}")
 
+# Replace Flask-style route with aiohttp route
+async def health_handler(request):
+    return web.Response(text='healthy', status=200)
+
 # Run the server
 async def start_server():
     local_ip = get_local_ip()
-    port = 5002  # Use the port specified in the Dockerfile
+    port = os.getenv("SOCKETIO_PORT", 5347)  # Default to 5347 if not set
+
+    # Add routes to the app
+    app.router.add_get('/health', health_handler)
 
     # Generate the server_config.json file
     generate_server_config(local_ip, port, "chatRoom")
@@ -149,4 +155,8 @@ async def start_server():
         await zeroconf.async_close()
 
 if __name__ == "__main__":
-    asyncio.run(start_server())
+    try:
+        asyncio.run(start_server())
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        sys.exit(1)
