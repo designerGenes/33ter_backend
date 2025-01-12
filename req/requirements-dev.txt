@@ -278,10 +278,6 @@ requests==2.32.3
     #   azure-core
     #   msrest
     #   requests-oauthlib
-requests-oauthlib==2.0.0
-    # via
-    #   -r req/requirements-dev.txt
-    #   msrest
 rubicon-objc==0.5.0
     # via
     #   -r req/requirements-dev.txt

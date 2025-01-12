@@ -27,6 +27,7 @@ services:
       - PYTHONPATH=/app
       - LOG_LEVEL=DEBUG
       - SERVER_PORT=5346
+      - SOCKETIO_PORT=5347
     logging:
       driver: "json-file"
       options:
@@ -81,7 +82,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    restart: unless-stopped  # Add restart policy
+    restart: unless-stopped
 
 networks:
   chatterbox-network:

@@ -4,6 +4,7 @@ import glob
 from dotenv import load_dotenv
 import json
 import requests  # Add this import
+import sys  # Add this import
 
 load_dotenv()
 
@@ -113,7 +114,7 @@ if __name__ == "__main__":
                     print("Failed to extract challenge")
             else:
                 print("Could not load the file")
-        print(f"Loaded OCR data from: {latest_file}")
+        print(f"Loaded OCR data from: {file_path}")  # Corrected variable name
     except Exception as e:
         print(f"Error reading Azure OCR response file: {e}")
         raw_word_list = None
