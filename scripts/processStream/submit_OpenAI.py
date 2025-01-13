@@ -102,8 +102,14 @@ if __name__ == "__main__":
                         SOCKETIO_PORT = os.getenv("SOCKETIO_PORT", 5347)
                         response = requests.post(
                             f'http://publish-message:{SOCKETIO_PORT}/broadcast',  # Changed container3 to publish-message for clarity
-                            json={"message": solution}
+                            json={
+                                "data": {
+                                    "title": "coding challenge",
+                                    "message": solution
+                                }
+                            }
                         )
+                        print(f"Socket.IO server response: {response.status_code} - {response.text}")  # Add this line
                         if response.status_code == 200:
                             print("Solution sent to Socket.IO server")
                         else:

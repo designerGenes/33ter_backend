@@ -5,17 +5,50 @@ import requests
 import logging
 import signal
 import sys
+import os
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 API_URL = "http://localhost:5346/upload"
 running = True
+PAUSE_FILE = "./.tmp/signal_pause_capture"
+RESUME_FILE = "./.tmp/signal_resume_capture"
 
 def signal_handler(sig, frame):
     global running
     logging.info("Received termination signal. Stopping...")
     running = False
+
+def get_latest_file(directory, prefix):
+    files = [f for f in os.listdir(directory) if f.startswith(prefix)]
+    if not files:
+        return None
+    latest_file = max(files, key=lambda f: os.path.getctime(os.path.join(directory, f)))
+    return os.path.join(directory, latest_file)
+
+def get_latest_directory(directory, prefix):
+    dirs = [d for d in os.listdir(directory) if d.startswith(prefix) and os.path.isdir(os.path.join(directory, d))]
+    if not dirs:
+        return None
+    latest_dir = max(dirs, key=lambda d: os.path.getctime(os.path.join(directory, d)))
+    return os.path.join(directory, latest_dir)
+
+def check_pause_resume():
+    pause_dir = get_latest_directory("./.tmp", "signal_pause_capture")
+    resume_dir = get_latest_directory("./.tmp", "signal_resume_capture")
+
+    if pause_dir:
+        logging.info("Pause signal detected. Pausing screenshot capture...")
+        while not resume_dir:
+            time.sleep(1)
+            resume_dir = get_latest_directory("./.tmp", "signal_resume_capture")
+        logging.info("Resume signal detected. Resuming screenshot capture...")
+
+    # Clean up all pause and resume directories
+    for d in os.listdir("./.tmp"):
+        if d.startswith("signal_pause_capture") or d.startswith("signal_resume_capture"):
+            os.rmdir(os.path.join("./.tmp", d))
 
 # Register signal handler for graceful shutdown
 signal.signal(signal.SIGINT, signal_handler)
@@ -25,6 +58,7 @@ logging.info("Starting screenshot capture...")
 
 while running:
     try:
+        check_pause_resume()
         # Capture the screenshot
         screenshot = pyautogui.screenshot()
 

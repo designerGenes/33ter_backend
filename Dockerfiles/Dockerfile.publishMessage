@@ -17,7 +17,7 @@ COPY scripts/publishMessage/publish_socketio.py /app/publish_socketio.py
 # Install Python dependencies
 # Install Python dependencies
 COPY ../req/requirements-publishMessage.txt /app/
-RUN pip3 install -r /app/requirements-publishMessage.txt
+RUN pip3 install --no-cache-dir -r /app/requirements-publishMessage.txt
 
 # Expose the port for the Socket.IO server
 EXPOSE 5347

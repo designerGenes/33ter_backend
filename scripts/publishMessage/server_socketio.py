@@ -33,7 +33,7 @@ def get_local_ip():
 # Store connected clients and rooms
 connected_clients = {}
 rooms = {
-    "chatRoom": {  # Default room
+    "cheddarbox_room": {  # Default room
         "clients": set(),
         "messages": []
     }
@@ -45,7 +45,7 @@ async def connect(sid, environ):
     logger.info(f"Client connected: {sid}")
     connected_clients[sid] = {"rooms": []}
     # Auto-join the default room
-    await join_room(sid, {"room": "chatRoom"})
+    await join_room(sid, {"room": "cheddarbox_room"})
 
 @sio.event
 async def get_rooms(sid):
@@ -87,11 +87,18 @@ async def disconnect(sid):
 @sio.event
 async def room_message(sid, data):
     room = data.get("room")
-    message = data.get("message")
-    if room and message:
+    message_data = data.get("data")
+    if room and message_data:
+        title = message_data.get("title")
+        message = message_data.get("message")
         logger.info(f"Client {sid} sent message to room {room}: {message}")
         # Forward the message structure as-is
-        await sio.emit("room_message", {"message": message}, room=room)
+        await sio.emit("room_message", {
+            "data": {
+                "title": title,
+                "message": message
+            }
+        }, room=room)
     else:
         logger.warning(f"Client {sid} sent invalid room message: {data}")
 
@@ -103,7 +110,7 @@ async def broadcast_mdns(ip, port):
         service_name,
         addresses=[socket.inet_aton(ip)],
         port=port,
-        properties={"room": "chatRoom"},  # Optional: Include additional metadata
+        properties={"room": "cheddarbox_room"},  # Optional: Include additional metadata
     )
     zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
     await zeroconf.async_register_service(service_info)
@@ -125,6 +132,33 @@ def generate_server_config(ip, port, room):
 async def health_handler(request):
     return web.Response(text='healthy', status=200)
 
+# Add a route to handle broadcast messages
+async def broadcast_handler(request):
+    try:
+        data = await request.json()
+        message_data = data.get("data")
+        if message_data:
+            title = message_data.get("title")
+            message = message_data.get("message")
+            if message:
+                logger.info(f"Broadcasting message: {message}")
+                await sio.emit("room_message", {
+                    "data": {
+                        "title": title,
+                        "message": message
+                    }
+                }, room="cheddarbox_room")
+                return web.Response(text='Message broadcasted', status=200)
+            else:
+                logger.warning("Received broadcast request without a message")
+                return web.Response(text='No message provided', status=400)
+        else:
+            logger.warning("Received broadcast request without data")
+            return web.Response(text='No data provided', status=400)
+    except Exception as e:
+        logger.error(f"Error handling broadcast request: {e}")
+        return web.Response(text='Internal server error', status=500)
+
 # Run the server
 async def start_server():
     local_ip = get_local_ip()
@@ -132,9 +166,10 @@ async def start_server():
 
     # Add routes to the app
     app.router.add_get('/health', health_handler)
+    app.router.add_post('/broadcast', broadcast_handler)
 
     # Generate the server_config.json file
-    generate_server_config(local_ip, port, "chatRoom")
+    generate_server_config(local_ip, port, "cheddarbox_room")
 
     # Broadcast server details using mDNS
     zeroconf, service_info = await broadcast_mdns(local_ip, port)  # Unpack the returned values
@@ -152,7 +187,7 @@ async def start_server():
         pass
     finally:
         # Clean up mDNS when the server stops
-        await zeroconf.async_unregister_service(service_info)
+        await zeroconf.async_unregistxer_service(service_info)
         await zeroconf.async_close()
 
 if __name__ == "__main__":

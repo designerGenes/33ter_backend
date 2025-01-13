@@ -12,13 +12,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the scripts into the container
-COPY scripts/processStream/server.py /app/
-COPY scripts/processStream/submit_Azure.py /app/
-COPY scripts/processStream/submit_OpenAI.py /app/
+COPY scripts/processStream/ /app/
 
 # Install Python dependencies
 COPY ../req/requirements-processStream.txt /app/
-RUN pip3 install -r /app/requirements-processStream.txt
+RUN pip3 install --no-cache-dir -r /app/requirements-processStream.txt
 
 # Create directories for logs
 RUN mkdir -p /app/logs

@@ -7,6 +7,7 @@ from azure.ai.vision.imageanalysis.models import VisualFeatures
 from azure.core.credentials import AzureKeyCredential
 import subprocess
 import sys
+import glob
 
 # Load environment variables from .env file
 load_dotenv()
@@ -49,8 +50,13 @@ def process_screenshot(file_path):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python submit_Azure.py <file_path>")
-        exit(1)
-    
-    file_path = sys.argv[1]
+        print("Usage: python submit_Azure.py <file_path>. Resorting to use default (latest saved screenshot)")
+        # determine most recent screenshot
+        list_of_files = glob.glob('/app/screenshots/*.png')  # get all .png files in the screenshots folder
+        if not list_of_files:
+            print("No screenshots found in the directory.")
+            exit()
+        file_path = max(list_of_files, key=os.path.getctime)  # get the most recent file
+    else:
+        file_path = sys.argv[1]
     process_screenshot(file_path)

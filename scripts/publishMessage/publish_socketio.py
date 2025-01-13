@@ -34,7 +34,10 @@ async def send_data(ip, port, room, message):
         # Prepare the message in the correct format
         message_data = {
             "room": room,
-            "message": message  # Send the message directly (no nested structure)
+            "data": {
+                "title": "coding challenge",
+                "message": message
+            }  
         }
 
         # Send the message to the room
