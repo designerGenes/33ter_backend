@@ -2,15 +2,28 @@ import asyncio
 import socketio
 import json
 import sys
-import os  # Add this import
+import os 
 
 # Load server details from the config file
 def load_server_details():
     try:
-        config_path = "/app/server_config.json"  # Path to the generated config file
+        run_mode = os.getenv("RUN_MODE", "local").lower()
+        if run_mode == "docker":
+            config_path = "/app/server_config.json"
+        else:
+            config_path = os.path.join(os.getcwd(), "server_config.json")
+        
         if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Config file not found at {config_path}")
-
+            # Fallback for docker mode: try using the current working directory
+            if run_mode == "docker":
+                alt_config_path = os.path.join(os.getcwd(), "server_config.json")
+                if os.path.exists(alt_config_path):
+                    config_path = alt_config_path
+                else:
+                    raise FileNotFoundError(f"Config file not found at {config_path} or {alt_config_path}")
+            else:
+                raise FileNotFoundError(f"Config file not found at {config_path}")
+                
         with open(config_path, "r") as f:
             config = json.load(f)
             return config["ip"], config["port"], config["room"]

@@ -3,6 +3,9 @@ FROM python:3.9-slim
 # Set the working directory
 WORKDIR /app
 
+# Create logs directory
+RUN mkdir -p /app/logs
+
 # Install system dependencies (if needed)
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -14,7 +17,6 @@ RUN apt-get update && apt-get install -y \
 COPY scripts/publishMessage/server_socketio.py /app/server_socketio.py
 COPY scripts/publishMessage/publish_socketio.py /app/publish_socketio.py
 
-# Install Python dependencies
 # Install Python dependencies
 COPY ../req/requirements-publishMessage.txt /app/
 RUN pip3 install --no-cache-dir -r /app/requirements-publishMessage.txt

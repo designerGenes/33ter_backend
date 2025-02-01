@@ -7,28 +7,46 @@ from zeroconf import ServiceInfo, IPVersion  # Correct import for ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 import json  # Add this import
 import os, sys 
+import psutil  # Add this import
+import argparse  # Add this import
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Determine logs directory based on RUN_MODE
+run_mode = os.getenv("RUN_MODE", "local").lower()
+if run_mode == "docker":
+    logs_dir = "/app/logs"
+else:
+    logs_dir = os.path.join(os.getcwd(), "logs")
+os.makedirs(logs_dir, exist_ok=True)
+file_handler = logging.FileHandler(os.path.join(logs_dir, "socketio.log"))
+file_handler.setLevel(logging.DEBUG)
+logger.addHandler(file_handler)
 
 # Create a Socket.IO server
 sio = socketio.AsyncServer(cors_allowed_origins='*')  # Allow all origins for simplicity
 app = web.Application()
 sio.attach(app)
 
-# Get the local IP address dynamically
+# Modify get_local_ip to prefer non-loopback interfaces
 def get_local_ip():
-    try:
-        # Create a socket to get the local IP address
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))  # Connect to a public DNS server
-        local_ip = s.getsockname()[0]
-        s.close()
-        return local_ip
-    except Exception as e:
-        logger.error(f"Could not determine local IP address: {e}")
-        return "0.0.0.0"  # Fallback to all interfaces
+    ip = os.getenv("ADVERTISE_IP")
+    if ip:
+        logger.info(f"Using ADVERTISE_IP: {ip}")
+        return ip
+    run_mode = os.getenv("RUN_MODE", "local").lower()
+    if run_mode == "docker":
+        try:
+            docker_host = socket.gethostbyname('host.docker.internal')
+            logger.info(f"Running in Docker mode; using Docker host IP: {docker_host}")
+            return docker_host
+        except Exception as e:
+            logger.error(f"Running in Docker mode but failed to get Docker host IP: {e}")
+    fallback_ip = socket.gethostbyname(socket.gethostname())
+    logger.info(f"Using local IP: {fallback_ip}")
+    return fallback_ip
 
 # Store connected clients and rooms
 connected_clients = {}
@@ -104,29 +122,51 @@ async def room_message(sid, data):
 
 # Broadcast server details using mDNS
 async def broadcast_mdns(ip, port):
-    service_name = "SocketIO Server._socketio._tcp.local."
-    service_info = ServiceInfo(
-        "_socketio._tcp.local.",
-        service_name,
-        addresses=[socket.inet_aton(ip)],
-        port=port,
-        properties={"room": "cheddarbox_room"},  # Optional: Include additional metadata
-    )
-    zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
-    await zeroconf.async_register_service(service_info)
-    logger.info(f"Broadcasting mDNS service: {service_name} at {ip}:{port}")
-    return zeroconf, service_info  # Return both zeroconf and service_info
+    run_mode = os.getenv("RUN_MODE", "local").lower()
+    if run_mode == "local":
+        logger.info("Skipping mDNS setup in local environment")
+        return None, None
+    try:
+        host_ip = get_local_ip()
+        service_type = "_socketio._tcp."  
+        service_name = "ChatterboxServer"
+        full_name = f"{service_name}.{service_type}local."
+        
+        service_info = ServiceInfo(
+            service_type,
+            full_name,
+            port=port,
+            addresses=[socket.inet_aton(host_ip)],
+            properties={
+                'path': '/',
+                'room': 'cheddarbox_room',
+                'server': 'socketio'
+            }
+        )
+        
+        zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
+        await zeroconf.async_register_service(service_info)
+        logger.info(f"Broadcasting mDNS service: {service_name} at {host_ip}:{port} with type '{service_type}'")
+        return zeroconf, service_info
+    except Exception as e:
+        logger.error(f"Failed to setup mDNS: {e}")
+        return None, None
 
 # Generate server_config.json
 def generate_server_config(ip, port, room):
+    run_mode = os.getenv("RUN_MODE", "local").lower()
+    if run_mode == "docker":
+        config_file = "/app/server_config.json"
+    else:
+        config_file = os.path.join(os.getcwd(), "server_config.json")
     config = {
         "ip": ip,
         "port": port,
         "room": room
     }
-    with open("/app/server_config.json", "w") as f:
+    with open(config_file, "w") as f:
         json.dump(config, f, indent=4)
-    logger.info(f"Generated server_config.json with IP: {ip}, Port: {port}, Room: {room}")
+    logger.info(f"Generated server_config.json at {config_file} with IP: {ip}, Port: {port}, Room: {room}")
 
 # Replace Flask-style route with aiohttp route
 async def health_handler(request):
@@ -161,36 +201,74 @@ async def broadcast_handler(request):
 
 # Run the server
 async def start_server():
-    local_ip = get_local_ip()
-    port = int(os.getenv("SOCKETIO_PORT", "5347"))  # Default to 5347 if not set
-
+    run_mode = os.getenv("RUN_MODE", "local").lower()
+    bind_ip = "0.0.0.0" if run_mode == "docker" else "127.0.0.1"
+    port = int(os.getenv("SOCKETIO_PORT", "5347"))
+    
     # Add routes to the app
     app.router.add_get('/health', health_handler)
     app.router.add_post('/broadcast', broadcast_handler)
 
-    # Generate the server_config.json file
-    generate_server_config(local_ip, port, "cheddarbox_room")
+    # Get host IP for config and mDNS
+    advertise_ip = get_local_ip()
+    
+    # Generate the server_config.json file with the host IP
+    generate_server_config(advertise_ip, port, "cheddarbox_room")
 
     # Broadcast server details using mDNS
-    zeroconf, service_info = await broadcast_mdns(local_ip, port)  # Unpack the returned values
+    zeroconf, service_info = await broadcast_mdns(advertise_ip, port)
 
-    logger.info(f"Starting Socket.IO server on {local_ip}:{port}")
+    # Start the server bound to all interfaces
+    logger.info(f"Starting Socket.IO server on {bind_ip}:{port}")
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, local_ip, port)
-    await site.start()
-
+    site = web.TCPSite(runner, bind_ip, port)
+    
     try:
+        await site.start()
         while True:
-            await asyncio.sleep(3600)  # Keep the server running
-    except asyncio.CancelledError:
-        pass
+            await asyncio.sleep(3600)
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        raise
     finally:
-        # Clean up mDNS when the server stops
-        await zeroconf.async_unregistxer_service(service_info)
-        await zeroconf.async_close()
+        if zeroconf and service_info:
+            await zeroconf.async_unregister_service(service_info)
+            await zeroconf.async_close()
+
+def find_and_kill_server():
+    """Find and kill any running instances of this script"""
+    current_pid = os.getpid()
+    current_script = os.path.abspath(__file__)
+    killed_count = 0
+    
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            # Check if this is a Python process
+            if proc.info['name'] == 'python' or proc.info['name'] == 'python3':
+                cmdline = proc.info['cmdline']
+                if cmdline and current_script in cmdline:
+                    # Don't kill ourselves
+                    if proc.pid != current_pid:
+                        logger.info(f"Killing server process: {proc.pid}")
+                        proc.kill()
+                        killed_count += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    
+    return killed_count
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Socket.IO Server')
+    parser.add_argument('-k', '--kill', action='store_true', 
+                       help='Kill any running instances of the server')
+    args = parser.parse_args()
+
+    if args.kill:
+        killed = find_and_kill_server()
+        logger.info(f"Killed {killed} server instance(s)")
+        sys.exit(0)
+
     try:
         asyncio.run(start_server())
     except Exception as e:

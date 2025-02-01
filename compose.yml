@@ -62,7 +62,9 @@ services:
             path: Dockerfiles/Dockerfile.publishMessage
     container_name: publish-message
     ports:
-      - "5347:5347"
+      - "5347:5347/tcp"
+      - "5347:5347/udp"
+      - "53530:5353/udp"  # Maps container UDP 5353 to host UDP 53530
     environment:
       - SOCKETIO_PORT=5347
       - PYTHONUNBUFFERED=1
@@ -70,6 +72,8 @@ services:
       - PYTHONPATH=/app
       - LOG_LEVEL=DEBUG
       - SERVER_PORT=5347
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allow container to resolve host IP
     logging:
       driver: "json-file"
       options:
