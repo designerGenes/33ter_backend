@@ -111,23 +111,42 @@ if __name__ == "__main__":
                 if extracted:
                     solution = submit_for_code_solution(extracted)
                     if solution:
-                        # Update Socket.IO server address based on run mode
-                        server_host = "publish-message" if run_mode == "docker" else "localhost"
-                        SOCKETIO_PORT = os.getenv("SOCKETIO_PORT", 5347)
-                        response = requests.post(
-                            f'http://{server_host}:{SOCKETIO_PORT}/broadcast',
-                            json={
-                                "data": {
-                                    "title": "coding challenge",
-                                    "message": solution
-                                }
-                            }
-                        )
-                        print(f"Socket.IO server response: {response.status_code} - {response.text}")  # Add this line
-                        if response.status_code == 200:
-                            print("Solution sent to Socket.IO server")
-                        else:
-                            print("Failed to send solution to Socket.IO server")
+                        # Get server configuration
+                        server_config_path = "/app/server_config.json" if run_mode == "docker" else "server_config.json"
+                        try:
+                            with open(server_config_path, 'r') as f:
+                                config = json.load(f)
+                                server_host = config.get('ip', 'localhost')
+                                server_port = config.get('port', 5347)
+                        except FileNotFoundError:
+                            print(f"Server config not found at {server_config_path}, using defaults")
+                            server_host = "publish-message" if run_mode == "docker" else "localhost"
+                            server_port = os.getenv("SOCKETIO_PORT", 5347)
+
+                        # Attempt to send the solution
+                        try:
+                            response = requests.post(
+                                f'http://{server_host}:{server_port}/broadcast',
+                                json={
+                                    "data": {
+                                        "title": "coding challenge",
+                                        "message": solution
+                                    }
+                                },
+                                timeout=5  # Add timeout
+                            )
+                            print(f"Socket.IO server response: {response.status_code} - {response.text}")
+                            if response.status_code == 200:
+                                print("Solution sent to Socket.IO server")
+                            else:
+                                print(f"Failed to send solution. Status code: {response.status_code}")
+                        except requests.exceptions.ConnectionError as e:
+                            print(f"Failed to connect to Socket.IO server at {server_host}:{server_port}")
+                            print(f"Error: {e}")
+                        except requests.exceptions.Timeout:
+                            print("Request to Socket.IO server timed out")
+                        except Exception as e:
+                            print(f"Unexpected error sending solution: {e}")
                     else:
                         print("Failed to generate solution")
                 else:
