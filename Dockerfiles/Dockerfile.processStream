@@ -25,4 +25,4 @@ RUN mkdir -p /app/logs
 EXPOSE $SERVER_PORT
 
 # Command to run the script
-CMD ["python3", "/app/server.py"]
+CMD ["python3", "/app/server_process_stream.py"]

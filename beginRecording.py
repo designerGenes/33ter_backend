@@ -6,6 +6,7 @@ import logging
 import signal
 import sys
 import os
+import json
 from dotenv import load_dotenv
 
 # Configure logging
@@ -14,13 +15,30 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 # Load environment variables
 load_dotenv()
 
-# Configure API URL based on environment
-run_mode = os.getenv("RUN_MODE", "local").lower()
-server_port = os.getenv("SERVER_PORT", "5001")
-server_host = "localhost" if run_mode == "local" else "container1"
-API_URL = f"http://{server_host}:{server_port}/upload"
+def get_process_stream_port():
+    """Read port from the JSON file."""
+    port_file = os.path.join(os.path.dirname(__file__), 'scripts/processStream/process_stream_port.json')
+    try:
+        with open(port_file, 'r') as f:
+            return json.load(f)['port']
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return None
 
-logging.info(f"Configured to connect to server at: {API_URL}")
+def wait_for_server_port(max_attempts=30, delay=2):
+    """Wait for the server port to become available."""
+    attempts = 0
+    while attempts < max_attempts:
+        port = get_process_stream_port()
+        if port is not None:
+            return port
+        logging.info(f"Waiting for process stream server port... (attempt {attempts + 1}/{max_attempts})")
+        time.sleep(delay)
+        attempts += 1
+    raise RuntimeError("Could not determine server port after maximum attempts")
+
+# Remove the early API_URL configuration
+run_mode = os.getenv("RUN_MODE", "local").lower()
+server_host = "localhost" if run_mode == "local" else "container1"
 
 running = True
 PAUSE_FILE = "./.tmp/signal_pause_capture"
@@ -66,6 +84,15 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 logging.info("Starting screenshot capture...")
+
+# Wait for server to be ready before starting
+try:
+    server_port = wait_for_server_port()
+    API_URL = f"http://{server_host}:{server_port}/upload"
+    logging.info(f"Configured to connect to server at: {API_URL}")
+except RuntimeError as e:
+    logging.error(f"Failed to start: {e}")
+    sys.exit(1)
 
 while running:
     try:

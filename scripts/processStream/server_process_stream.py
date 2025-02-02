@@ -4,6 +4,8 @@ from flask import Flask, request
 from threading import Thread
 import subprocess
 from dotenv import load_dotenv
+import socket
+import json
 
 load_dotenv()
 
@@ -20,7 +22,35 @@ else:
     UPLOAD_DIR = os.path.join(os.getcwd(), "screenshots")
     SIGNAL_FILE = os.path.join(os.getcwd(), "trigger.signal")
 
-SERVER_PORT = os.getenv("SERVER_PORT")
+# Add port management functions
+def find_available_port(start_port=5000, max_port=5100):
+    """Find an available port starting from start_port."""
+    for port in range(start_port, max_port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('', port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(f"No available ports found between {start_port} and {max_port}")
+
+def save_port_info(port):
+    """Save the port number to a shared file."""
+    port_file = os.path.join(os.path.dirname(__file__), 'process_stream_port.json')
+    with open(port_file, 'w') as f:
+        json.dump({'port': port}, f)
+    print(f"Server port {port} saved to {port_file}")
+
+def get_server_port():
+    """Get the server port, finding an available one if necessary."""
+    try:
+        default_port = int(os.getenv("SERVER_PORT", "5000"))
+        port = find_available_port(start_port=default_port)
+        save_port_info(port)
+        return port
+    except Exception as e:
+        print(f"Error setting up port: {e}")
+        raise
 
 # Ensure the upload directory exists
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -80,5 +110,7 @@ if __name__ == '__main__':
     # Start the cleanup thread
     Thread(target=cleanup_old_files, daemon=True).start()
 
-    # Start the Flask server
-    app.run(host='0.0.0.0', port=SERVER_PORT)
+    # Start the Flask server with dynamic port
+    port = get_server_port()
+    print(f"Starting server on port {port}")
+    app.run(host='0.0.0.0', port=port)

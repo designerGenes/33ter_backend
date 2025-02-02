@@ -30,6 +30,11 @@ sio = socketio.AsyncServer(cors_allowed_origins='*')  # Allow all origins for si
 app = web.Application()
 sio.attach(app)
 
+# Add constants after the existing imports
+SERVICE_TYPE = "_socketio._tcp.local."
+SERVICE_NAME = "ChatterboxServer"
+DEFAULT_ROOM = "cheddarbox_room"
+
 # Modify get_local_ip to prefer non-loopback interfaces
 def get_local_ip():
     ip = os.getenv("ADVERTISE_IP")
@@ -126,28 +131,41 @@ async def broadcast_mdns(ip, port):
     if run_mode == "local":
         logger.info("Skipping mDNS setup in local environment")
         return None, None
+        
     try:
         host_ip = get_local_ip()
-        service_type = "_socketio._tcp."  
-        service_name = "ChatterboxServer"
-        full_name = f"{service_name}.{service_type}local."
         
+        # Enhanced service properties
         service_info = ServiceInfo(
-            service_type,
-            full_name,
-            port=port,
+            SERVICE_TYPE,
+            f"{SERVICE_NAME}.{SERVICE_TYPE}",
             addresses=[socket.inet_aton(host_ip)],
+            port=port,
             properties={
                 'path': '/',
-                'room': 'cheddarbox_room',
-                'server': 'socketio'
-            }
+                'room': DEFAULT_ROOM,
+                'server': 'socketio',
+                'version': '1.0',
+                'protocol': 'socketio',
+                'host': host_ip
+            },
+            server=f"{SERVICE_NAME}.local."
         )
         
-        zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
-        await zeroconf.async_register_service(service_info)
-        logger.info(f"Broadcasting mDNS service: {service_name} at {host_ip}:{port} with type '{service_type}'")
-        return zeroconf, service_info
+        # Initialize Zeroconf with error handling
+        try:
+            zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
+            await zeroconf.async_register_service(service_info)
+            logger.info(f"Successfully registered mDNS service: {SERVICE_NAME}")
+            logger.info(f"Service details: {host_ip}:{port} ({SERVICE_TYPE})")
+            return zeroconf, service_info
+            
+        except Exception as e:
+            logger.error(f"Failed to register mDNS service: {e}")
+            if zeroconf:
+                await zeroconf.async_close()
+            return None, None
+            
     except Exception as e:
         logger.error(f"Failed to setup mDNS: {e}")
         return None, None
@@ -218,6 +236,20 @@ async def start_server():
     # Broadcast server details using mDNS
     zeroconf, service_info = await broadcast_mdns(advertise_ip, port)
 
+    # Define cleanup handler
+    async def cleanup(app):
+        if zeroconf and service_info:
+            try:
+                logger.info("Unregistering mDNS service...")
+                await zeroconf.async_unregister_service(service_info)
+                await zeroconf.async_close()
+                logger.info("mDNS service unregistered")
+            except Exception as e:
+                logger.error(f"Error unregistering mDNS service: {e}")
+
+    # Register cleanup handler before starting the server
+    app.on_cleanup.append(cleanup)
+
     # Start the server bound to all interfaces
     logger.info(f"Starting Socket.IO server on {bind_ip}:{port}")
     runner = web.AppRunner(app)
@@ -232,9 +264,7 @@ async def start_server():
         logger.error(f"Server error: {e}")
         raise
     finally:
-        if zeroconf and service_info:
-            await zeroconf.async_unregister_service(service_info)
-            await zeroconf.async_close()
+        await runner.cleanup()
 
 def find_and_kill_server():
     """Find and kill any running instances of this script"""
