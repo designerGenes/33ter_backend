@@ -15,30 +15,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 # Load environment variables
 load_dotenv()
 
-def get_process_stream_port():
-    """Read port from the JSON file."""
-    port_file = os.path.join(os.path.dirname(__file__), 'scripts/processStream/process_stream_port.json')
-    try:
-        with open(port_file, 'r') as f:
-            return json.load(f)['port']
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return None
+# Remove get_process_stream_port and wait_for_server_port functions since we're using a fixed port
 
-def wait_for_server_port(max_attempts=30, delay=2):
-    """Wait for the server port to become available."""
-    attempts = 0
-    while attempts < max_attempts:
-        port = get_process_stream_port()
-        if port is not None:
-            return port
-        logging.info(f"Waiting for process stream server port... (attempt {attempts + 1}/{max_attempts})")
-        time.sleep(delay)
-        attempts += 1
-    raise RuntimeError("Could not determine server port after maximum attempts")
-
-# Remove the early API_URL configuration
 run_mode = os.getenv("RUN_MODE", "local").lower()
 server_host = "localhost" if run_mode == "local" else "container1"
+PROCESS_STREAM_PORT = 5347  # Fixed port matching server_process_stream.py
 
 running = True
 PAUSE_FILE = "./.tmp/signal_pause_capture"
@@ -85,14 +66,9 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 logging.info("Starting screenshot capture...")
 
-# Wait for server to be ready before starting
-try:
-    server_port = wait_for_server_port()
-    API_URL = f"http://{server_host}:{server_port}/upload"
-    logging.info(f"Configured to connect to server at: {API_URL}")
-except RuntimeError as e:
-    logging.error(f"Failed to start: {e}")
-    sys.exit(1)
+# Use fixed port instead of discovery
+API_URL = f"http://{server_host}:{PROCESS_STREAM_PORT}/upload"
+logging.info(f"Configured to connect to server at: {API_URL}")
 
 while running:
     try:
