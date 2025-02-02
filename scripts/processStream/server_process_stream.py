@@ -1,6 +1,7 @@
 import os
 import time
 from flask import Flask, request
+import requests  # Add this import
 from threading import Thread
 import subprocess
 from dotenv import load_dotenv
@@ -49,6 +50,22 @@ def cleanup_old_files():
                     print(f"Deleted old file: {file_name}")
         time.sleep(60)  # Run every minute
 
+def send_socket_message(title, message):
+    """Send a message to the Socket.IO server's broadcast endpoint."""
+    try:
+        socketio_url = "http://localhost:5348/broadcast"  # Fixed port for Socket.IO server
+        payload = {
+            "data": {
+                "title": title,
+                "message": message
+            }
+        }
+        response = requests.post(socketio_url, json=payload, timeout=5)
+        if response.status_code != 200:
+            print(f"Failed to send socket message: {response.status_code}")
+    except Exception as e:
+        print(f"Error sending socket message: {e}")
+
 @app.route('/upload', methods=['POST'])
 def upload():
     """Handle file uploads from the host."""
@@ -67,8 +84,15 @@ def signal():
     files = [os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) if os.path.isfile(os.path.join(UPLOAD_DIR, f))]
     if not files:
         return "No screenshot found", 404
+    
     most_recent_file = max(files, key=os.path.getmtime)
-    print(f"Processing most recent file: {most_recent_file}")
+    filename = os.path.basename(most_recent_file)
+    
+    # Log the trigger event
+    send_socket_message(
+        "Manual Trigger",
+        f"Processing screenshot: {filename}"
+    )
     
     # Get the absolute path to the script directory
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -79,8 +103,18 @@ def signal():
     else:
         submit_azure_script = os.path.join(current_dir, "submit_Azure.py")
     
-    subprocess.run(["python", submit_azure_script, most_recent_file])
-    return "Screenshot submitted for OCR", 200
+    # Start the processing
+    try:
+        subprocess.run(["python", submit_azure_script, most_recent_file], check=True)
+        send_socket_message(
+            "Processing Complete",
+            f"Successfully processed {filename}"
+        )
+        return "Screenshot submitted for OCR", 200
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Error processing {filename}: {str(e)}"
+        send_socket_message("Processing Error", error_msg)
+        return error_msg, 500
 
 @app.route('/health', methods=['GET'])
 def health_check():

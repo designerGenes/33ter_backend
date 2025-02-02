@@ -37,18 +37,7 @@ SOLUTION_LANGUAGE = os.getenv("SOLUTION_LANGUAGE", "Swift")
 OPENAI_PROMPT_SOLVE = f"""
 create a {SOLUTION_LANGUAGE} function that solves the coding challenge below.
 You should be focused most on conciseness, efficiency, and readability, and second most on lowering time and space complexity.
-You should respond FIRST with your solution to the coding challenge (written in {SOLUTION_LANGUAGE}),
-and then afterwards with a line-by-line explanation of your code.
-    Example:
-    SOLUTION
-    (full {SOLUTION_LANGUAGE} solution, written to be as time and space efficient as possible.)
-    (two line breaks)
-    EXPLANATION
-    (segment 1 of the same {SOLUTION_LANGUAGE} solution)
-    EXPLANATION of segment 1 in a conversational tone
-    (segment 2 of the same {SOLUTION_LANGUAGE} solution, if it exists)
-    EXPLANATION of segment 2 in a conversational tone
-
+Do not include any additional functionality beyond what is required to solve the challenge.
 Ensure that your entire response is in plain text with NO markdown formatting whatsoever (do not include any markdown tags such as ```swift or ```python.
 Here is the coding challenge and related details:
 """
