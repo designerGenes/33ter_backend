@@ -3,10 +3,20 @@ from openai import OpenAI
 import glob
 from dotenv import load_dotenv
 import json
-import requests  # Add this import
-import sys  # Add this import
+import requests 
+import sys
 
 load_dotenv()
+
+# Add run mode check
+run_mode = os.getenv("RUN_MODE", "local").lower()
+
+# Determine logs directory
+if run_mode == "docker":
+    logs_dir = "/app/logs"
+else:
+    logs_dir = os.path.join(os.getcwd(), "logs")
+os.makedirs(logs_dir, exist_ok=True)
 
 # Load your API key from an environment variable
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -15,23 +25,23 @@ OPENAI_SYSTEM_MESSAGE = """You are a diligent and helpful software developer who
 and extracting the text of a coding challenge from a list of semi-related text phrases.
     """
 OPENAI_PROMPT_EXTRACT = """Here is an array of words which were extracted using OCR from a webpage.
-The page contained (at least) a Leetcode-style coding challenge,
+The page contained (at least) one Leetcode-style coding challenge,
 and lots of other unrelated data such as text from advertisements, hyperlinks, etc.
 Your job is to extract the full text of the coding challenge and ONLY the coding challenge,
 from the list of words and phrases below:
 """
 
 # Get the programming language from environment variable, default to Python
-SOLUTION_LANGUAGE = os.getenv("SOLUTION_LANGUAGE", "Python")
+SOLUTION_LANGUAGE = os.getenv("SOLUTION_LANGUAGE", "Swift")
 
 OPENAI_PROMPT_SOLVE = f"""
-Now that you have received the text of a coding challenge, create a {SOLUTION_LANGUAGE} function that solves the coding challenge below.
+create a {SOLUTION_LANGUAGE} function that solves the coding challenge below.
 You should be focused most on conciseness, efficiency, and readability, and second most on lowering time and space complexity.
 You should respond FIRST with your solution to the coding challenge (written in {SOLUTION_LANGUAGE}),
 and then afterwards with a line-by-line explanation of your code.
     Example:
     SOLUTION
-    (full {SOLUTION_LANGUAGE} solution, written to be as time and space efficient as possible)
+    (full {SOLUTION_LANGUAGE} solution, written to be as time and space efficient as possible.)
     (two line breaks)
     EXPLANATION
     (segment 1 of the same {SOLUTION_LANGUAGE} solution)
@@ -39,6 +49,7 @@ and then afterwards with a line-by-line explanation of your code.
     (segment 2 of the same {SOLUTION_LANGUAGE} solution, if it exists)
     EXPLANATION of segment 2 in a conversational tone
 
+Ensure that your entire response is in plain text with NO markdown formatting whatsoever (do not include any markdown tags such as ```swift or ```python.
 Here is the coding challenge and related details:
 """
 
@@ -56,7 +67,8 @@ def submit_for_extraction(prompt):
             temperature=0.7
         )
         print("Received coding challenge response: ")
-        with open('/app/logs/extracted_challenge.txt', 'w') as f:
+        extraction_file = os.path.join(logs_dir, 'extracted_challenge.txt')
+        with open(extraction_file, 'w') as f:
             f.write(response.choices[0].message.content)
         return response.choices[0].message.content
     except Exception as e:
@@ -75,7 +87,8 @@ def submit_for_code_solution(prompt):
             temperature=0.7
         )
         print("Received coding challenge SOLUTION: ")
-        with open('/app/logs/solution.txt', 'w') as f:
+        solution_file = os.path.join(logs_dir, 'solution.txt')
+        with open(solution_file, 'w') as f:
             f.write(response.choices[0].message.content)
         return response.choices[0].message.content
     except Exception as e:
@@ -98,10 +111,11 @@ if __name__ == "__main__":
                 if extracted:
                     solution = submit_for_code_solution(extracted)
                     if solution:
-                        # Send the solution to the Socket.IO server (Container #2)
+                        # Update Socket.IO server address based on run mode
+                        server_host = "publish-message" if run_mode == "docker" else "localhost"
                         SOCKETIO_PORT = os.getenv("SOCKETIO_PORT", 5347)
                         response = requests.post(
-                            f'http://publish-message:{SOCKETIO_PORT}/broadcast',  # Changed container3 to publish-message for clarity
+                            f'http://{server_host}:{SOCKETIO_PORT}/broadcast',
                             json={
                                 "data": {
                                     "title": "coding challenge",

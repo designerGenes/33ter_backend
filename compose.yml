@@ -72,6 +72,7 @@ services:
       - PYTHONPATH=/app
       - LOG_LEVEL=DEBUG
       - SERVER_PORT=5347
+      - SOLUTION_LANGUAGE=SWIFT
     extra_hosts:
       - "host.docker.internal:host-gateway"  # Allow container to resolve host IP
     logging:

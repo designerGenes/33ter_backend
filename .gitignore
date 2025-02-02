@@ -3,7 +3,7 @@ venv/
 VENV/
 env/
 ENV/
-
+screenshots/
 # Ignore environment variable files
 .env
 

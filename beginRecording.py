@@ -6,11 +6,22 @@ import logging
 import signal
 import sys
 import os
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
-API_URL = "http://localhost:5346/upload"
+# Load environment variables
+load_dotenv()
+
+# Configure API URL based on environment
+run_mode = os.getenv("RUN_MODE", "local").lower()
+server_port = os.getenv("SERVER_PORT", "5001")
+server_host = "localhost" if run_mode == "local" else "container1"
+API_URL = f"http://{server_host}:{server_port}/upload"
+
+logging.info(f"Configured to connect to server at: {API_URL}")
+
 running = True
 PAUSE_FILE = "./.tmp/signal_pause_capture"
 RESUME_FILE = "./.tmp/signal_resume_capture"
