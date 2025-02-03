@@ -225,7 +225,7 @@ async def broadcast_handler(request):
 # Run the server
 async def start_server():
     run_mode = os.getenv("RUN_MODE", "local").lower()
-    bind_ip = "0.0.0.0" if run_mode == "docker" else "127.0.0.1"
+    bind_ip = "0.0.0.0"  # Always bind to all interfaces to allow external connections
     port = 5348  # Fixed port for socket.io server
     
     # Add routes to the app
