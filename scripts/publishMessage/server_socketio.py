@@ -1,14 +1,14 @@
 import socketio
 import asyncio
 import logging
-from aiohttp import web, web_runner  # Correct import for web_runner
+from aiohttp import web, web_runner  
 import socket
-from zeroconf import ServiceInfo, IPVersion  # Correct import for ServiceInfo
+from zeroconf import ServiceInfo, IPVersion  
 from zeroconf.asyncio import AsyncZeroconf
-import json  # Add this import
+import json 
 import os, sys 
-import psutil  # Add this import
-import argparse  # Add this import
+import psutil 
+import argparse 
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -114,12 +114,13 @@ async def room_message(sid, data):
     if room and message_data:
         title = message_data.get("title")
         message = message_data.get("message")
-        logger.info(f"Client {sid} sent message to room {room}: {message}")
-        # Forward the message structure as-is
+        log_type = message_data.get("logType", "prime")  # Default to "prime" if not specified
+        logger.info(f"Client {sid} sent message to room {room}: {message} (logType: {log_type})")
         await sio.emit("room_message", {
             "data": {
                 "title": title,
-                "message": message
+                "message": message,
+                "logType": log_type
             }
         }, room=room)
     else:
@@ -186,11 +187,10 @@ def generate_server_config(ip, port, room):
         json.dump(config, f, indent=4)
     logger.info(f"Generated server_config.json at {config_file} with IP: {ip}, Port: {port}, Room: {room}")
 
-# Replace Flask-style route with aiohttp route
 async def health_handler(request):
     return web.Response(text='healthy', status=200)
 
-# Add a route to handle broadcast messages
+# This is the most important part of the script
 async def broadcast_handler(request):
     try:
         data = await request.json()
@@ -200,15 +200,15 @@ async def broadcast_handler(request):
         if message_data:
             title = message_data.get("title")
             message = message_data.get("message")
-            log_type = message_data.get("logType", "info")  # Support logType from DeepSeek
+            log_type = message_data.get("logType", "info")  # Default to "prime" if not specified
             
             if message:
-                logger.info(f"Broadcasting message: {title}: {message} ({log_type})")
+                logger.info(f"Broadcasting message: {title}: {message} (logType: {log_type})")
                 await sio.emit("room_message", {
                     "data": {
                         "title": title,
                         "message": message,
-                        "logType": log_type  # Include logType in broadcast
+                        "logType": log_type
                     }
                 }, room=room)
                 return web.Response(text='Message broadcasted', status=200)

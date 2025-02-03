@@ -1,7 +1,8 @@
-
 import os
 import json
 import requests
+
+#BAD
 
 MAGIC_DEFAULT_PORT = 5348
 
@@ -16,7 +17,8 @@ def discover_server_config():
     
     global socketIO_server_host
     global socketIO_server_port
-    if socketIO_server_host is not None and socketIO_server_port is not None:
+    if (socketIO_server_host is not None and 
+        socketIO_server_port is not None):
         return socketIO_server_host, socketIO_server_port
     try:
         with open(server_config_path, 'r') as f:
@@ -56,12 +58,15 @@ def log_to_socketio(log_message, title=None, logType="info"):
     if title is None:
         title = logType
     send_to_socketio({
+                "room": "cheddarbox_room",
                 "data": {
                     "title": title,
                     "message": log_message,
                     "logType": logType
                 }
             },
-            socketIO_server_host,
-            socketIO_server_port)
+            "localhost",
+            #socketIO_server_host,
+            MAGIC_DEFAULT_PORT)
+            #socketIO_server_port)
     print(f"[{logType}]: \t {title}: \t {log_message}")
