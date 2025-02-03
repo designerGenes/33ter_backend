@@ -8,9 +8,6 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from submit_DeepSeek import (
     submit_for_code_solution, 
-    log_to_socketio, 
-    send_to_socketio, 
-    discover_server_config,
     setup_logs_dir,
     DEEPSEEK_SYSTEM_MESSAGE
 )
@@ -93,37 +90,27 @@ def test_setup_logs_dir():
             mock_makedirs.assert_called_once_with('/app/logs', exist_ok=True)
 
 @patch('submit_DeepSeek.deepseek_client')
-def test_submit_for_code_solution(mock_client, test_data, mock_deepseek_api):
+@patch('socketio_utils.log_to_socketio')  # Updated to patch the imported function
+def test_submit_for_code_solution(mock_log, mock_client, test_data, mock_deepseek_api):
     mock_client.chat_completion.return_value = mock_deepseek_api.chat_completion()
     
-    with patch('submit_DeepSeek.log_to_socketio') as mock_log:
-        submit_for_code_solution(test_data)
-        
-        # Verify logging calls
-        assert mock_log.call_count >= 2
-        
-        # Verify DeepSeek API call
-        mock_client.chat_completion.assert_called_once()
-        call_args = mock_client.chat_completion.call_args[1]
-        assert call_args['temperature'] == 0.1
-        assert DEEPSEEK_SYSTEM_MESSAGE in call_args['prompt_sys']
-        assert isinstance(call_args['prompt'], str)
-
-@patch('submit_DeepSeek.send_to_socketio')
-def test_log_to_socketio(mock_send):
-    test_message = "Test log message"
-    log_to_socketio(test_message, title="Test", logType="info")
+    submit_for_code_solution(test_data)
     
-    mock_send.assert_called_once()
-    call_args = mock_send.call_args[0][0]
-    assert call_args['data']['title'] == "Test"
-    assert call_args['data']['logType'] == "info"
+    # Verify logging calls
+    assert mock_log.call_count >= 2
+    
+    # Verify DeepSeek API call
+    mock_client.chat_completion.assert_called_once()
+    call_args = mock_client.chat_completion.call_args[1]
+    assert call_args['temperature'] == 0.1
+    assert DEEPSEEK_SYSTEM_MESSAGE in call_args['prompt_sys']
+    assert isinstance(call_args['prompt'], str)
 
 def test_error_handling(test_data):
     with patch('submit_DeepSeek.deepseek_client') as mock_client:
         mock_client.chat_completion.side_effect = Exception("API Error")
         
-        with patch('submit_DeepSeek.log_to_socketio') as mock_log:
+        with patch('socketio_utils.log_to_socketio') as mock_log:  # Updated to patch the imported function
             result = submit_for_code_solution(test_data)
             assert result is None
 
