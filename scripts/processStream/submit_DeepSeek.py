@@ -37,24 +37,23 @@ def submit_for_code_solution(raw_word_list):
         
         response = deepseek_client.chat_completion(
             # max_tokens=2048,
-            # temperature=0.1,
+            temperature=0.1,
             prompt=TOTAL_PROMPT,
             prompt_sys=DEEPSEEK_SYSTEM_MESSAGE,
         )
         if response is not None:
-            # log_to_socketio("DeepSeek API returned Something", logType="info")
             # extract the challenge which should be between <CHALLENGE> and </CHALLENGE>
             challenge_start = response.find("<CHALLENGE>")
             challenge_end = response.find("</CHALLENGE>")
             if challenge_start != -1 and challenge_end != -1:
                 challenge = response[challenge_start + len("<CHALLENGE>"):challenge_end]
-                # log_to_socketio(challenge, title="Challenge Extracted", logType="info")
+                log_to_socketio(challenge, title="Challenge", logType="info")
             # extract the solution which should be between <SOLUTION> and </SOLUTION>
             solution_start = response.find("<SOLUTION>")
             solution_end = response.find("</SOLUTION>")
             if solution_start != -1 and solution_end != -1:
                 solution = response[solution_start + len("<SOLUTION>"):solution_end]
-                log_to_socketio(solution, title="Solution Generated", logType="prime")
+                log_to_socketio(solution, title="Solution", logType="prime")
         else:
             log_to_socketio("DeepSeek API returned None", logType="error")
     except Exception as e:
