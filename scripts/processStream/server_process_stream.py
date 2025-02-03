@@ -19,9 +19,11 @@ run_mode = os.getenv("RUN_MODE", "local").lower()
 if run_mode == "docker":
     UPLOAD_DIR = "/app/screenshots"
     SIGNAL_FILE = "/app/trigger.signal"
+    submit_azure_script = "/app/submit_Azure.py"
 else:
     UPLOAD_DIR = os.path.join(os.getcwd(), "screenshots")
     SIGNAL_FILE = os.path.join(os.getcwd(), "trigger.signal")
+    submit_azure_script = os.path.join(os.path.dirname(__file__), "submit_Azure.py")
 
 def save_port_info(port):
     """Save the port number to a shared file."""
@@ -53,18 +55,34 @@ def cleanup_old_files():
 def send_socket_message(title, message):
     """Send a message to the Socket.IO server's broadcast endpoint."""
     try:
-        socketio_url = "http://localhost:5348/broadcast"  # Fixed port for Socket.IO server
+        # Determine the Socket.IO server address
+        host = "127.0.0.1" if run_mode == "local" else "host.docker.internal"
+        socketio_url = f"http://{host}:5348/broadcast"
+        
         payload = {
             "data": {
                 "title": title,
                 "message": message
             }
         }
-        response = requests.post(socketio_url, json=payload, timeout=5)
+        
+        print(f"Sending message to Socket.IO server at {socketio_url}")
+        print(f"Payload: {json.dumps(payload, indent=2)}")
+        
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(socketio_url, json=payload, headers=headers, timeout=5)
+        
         if response.status_code != 200:
-            print(f"Failed to send socket message: {response.status_code}")
+            print(f"Failed to send socket message. Status code: {response.status_code}")
+            print(f"Response text: {response.text}")
+        else:
+            print(f"Successfully sent message to Socket.IO server")
+            
     except Exception as e:
-        print(f"Error sending socket message: {e}")
+        print(f"Error sending socket message: {str(e)}")
+        if hasattr(e, 'response'):
+            print(f"Response status: {e.response.status_code}")
+            print(f"Response text: {e.response.text}")
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -80,7 +98,7 @@ def upload():
 
 @app.route('/signal', methods=['POST'])
 def signal():
-    """Handle signal to process the most recent file immediately via GET."""
+    """Handle signal to process the most recent file immediately."""
     files = [os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) if os.path.isfile(os.path.join(UPLOAD_DIR, f))]
     if not files:
         return "No screenshot found", 404
@@ -88,31 +106,39 @@ def signal():
     most_recent_file = max(files, key=os.path.getmtime)
     filename = os.path.basename(most_recent_file)
     
-    # Log the trigger event
     send_socket_message(
         "Manual Trigger",
         f"Processing screenshot: {filename}"
     )
     
-    # Get the absolute path to the script directory
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # Adjust script path based on run mode
-    if run_mode == "docker":
-        submit_azure_script = "/app/submit_Azure.py"
-    else:
-        submit_azure_script = os.path.join(current_dir, "submit_Azure.py")
-    
-    # Start the processing
     try:
-        subprocess.run(["python", submit_azure_script, most_recent_file], check=True)
-        send_socket_message(
-            "Processing Complete",
-            f"Successfully processed {filename}"
+        # Only run Azure OCR for now
+        azure_result = subprocess.run(
+            ["python", submit_azure_script, most_recent_file],
+            capture_output=True,
+            text=True,
+            check=True
         )
-        return "Screenshot submitted for OCR", 200
+        
+        # Send Azure's OCR response to the chatroom
+        azure_output = azure_result.stdout.strip()
+        if azure_output:
+            try:
+                # Try to parse as JSON for better formatting
+                ocr_data = json.loads(azure_output)
+                formatted_output = json.dumps(ocr_data, indent=2)
+            except json.JSONDecodeError:
+                formatted_output = azure_output
+                
+            send_socket_message(
+                "Received coding challenge response:",  
+                formatted_output
+            )
+            
+        return "Screenshot processed by Azure OCR", 200
+        
     except subprocess.CalledProcessError as e:
-        error_msg = f"Error processing {filename}: {str(e)}"
+        error_msg = f"Error processing {filename}: {str(e)}\nOutput: {e.output}"
         send_socket_message("Processing Error", error_msg)
         return error_msg, 500
 
