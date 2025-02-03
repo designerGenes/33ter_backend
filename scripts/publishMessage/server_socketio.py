@@ -194,18 +194,23 @@ async def health_handler(request):
 async def broadcast_handler(request):
     try:
         data = await request.json()
+        room = data.get("room", "cheddarbox_room")  # Default to cheddarbox_room if not specified
         message_data = data.get("data")
+        
         if message_data:
             title = message_data.get("title")
             message = message_data.get("message")
+            log_type = message_data.get("logType", "info")  # Support logType from DeepSeek
+            
             if message:
-                logger.info(f"Broadcasting message: {message}")
+                logger.info(f"Broadcasting message: {title}: {message} ({log_type})")
                 await sio.emit("room_message", {
                     "data": {
                         "title": title,
-                        "message": message
+                        "message": message,
+                        "logType": log_type  # Include logType in broadcast
                     }
-                }, room="cheddarbox_room")
+                }, room=room)
                 return web.Response(text='Message broadcasted', status=200)
             else:
                 logger.warning("Received broadcast request without a message")
