@@ -4,6 +4,28 @@
 #
 #    pip-compile --output-file=requirements.txt requirements.in
 #
+
+# Core dependencies
 python-dotenv==1.0.1
-    # via -r requirements.in
-requests==2.32.3  # Ensure this package is listed
+requests==2.32.3
+psutil==5.9.8
+pyautogui==0.9.54
+
+# Socket.IO and dependencies
+python-socketio==5.12.0
+aiohttp==3.9.3
+
+# Service discovery
+zeroconf==0.131.0
+
+# Development tools
+debugpy==1.8.1
+
+# Lock versions of sub-dependencies to avoid conflicts
+aiosignal>=1.3.1
+attrs>=23.2.0
+frozenlist>=1.4.1
+multidict>=6.0.4
+yarl>=1.9.4
+async-timeout>=4.0.3
+flask>=2.1.1
