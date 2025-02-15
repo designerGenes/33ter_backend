@@ -1,6 +1,6 @@
 import os
 import time
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import requests  # Add this import
 from threading import Thread
 import subprocess
@@ -84,21 +84,8 @@ def send_socket_message(title, message):
             print(f"Response status: {e.response.status_code}")
             print(f"Response text: {e.response.text}")
 
-@app.route('/upload', methods=['POST'])
-def upload():
-    """Handle file uploads from the host."""
-    file = request.files.get('file')
-    if not file:
-        return "No file provided", 400
-
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    file.save(file_path)
-    print(f"Saved file: {file.filename}")
-    return "File received", 200
-
-@app.route('/signal', methods=['POST'])
-def signal():
-    """Handle signal to process the most recent file immediately."""
+def process_latest_screenshot():
+    """Process the most recent screenshot file."""
     files = [os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) if os.path.isfile(os.path.join(UPLOAD_DIR, f))]
     if not files:
         return "No screenshot found", 404
@@ -112,7 +99,7 @@ def signal():
     )
     
     try:
-        # Only run Azure OCR for now
+        # Run Azure OCR
         azure_result = subprocess.run(
             ["python", submit_azure_script, most_recent_file],
             capture_output=True,
@@ -141,6 +128,30 @@ def signal():
         error_msg = f"Error processing {filename}: {str(e)}\nOutput: {e.output}"
         send_socket_message("Processing Error", error_msg)
         return error_msg, 500
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    """Handle file uploads from the host."""
+    file = request.files.get('file')
+    if not file:
+        return "No file provided", 400
+
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    file.save(file_path)
+    print(f"Saved file: {file.filename}")
+    return "File received", 200
+
+@app.route('/trigger', methods=['POST'])
+def trigger():
+    """Handle manual trigger to process the most recent file."""
+    result, status_code = process_latest_screenshot()
+    return jsonify({"message": result}), status_code
+
+@app.route('/signal', methods=['POST'])
+def signal():
+    """Handle signal to process the most recent file immediately."""
+    result, status_code = process_latest_screenshot()
+    return jsonify({"message": result}), status_code
 
 @app.route('/health', methods=['GET'])
 def health_check():

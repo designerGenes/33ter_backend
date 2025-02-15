@@ -31,51 +31,72 @@ def submit_for_code_solution(raw_word_list):
     # we'll combine extraction and solution generation into a single prompt.  Deepseek is pretty smart
     TOTAL_PROMPT = f'<PROMPT>{DEEPSEEK_PROMPT_EXTRACT}.  {DEEPSEEK_PROMPT_SOLVE}</PROMPT>: <WORDLIST>{raw_word_list}</WORDLIST>'
     try:
-        
         response = deepseek_client.chat_completion(
-            # max_tokens=2048,
             temperature=0.1,
             prompt=TOTAL_PROMPT,
             prompt_sys=DEEPSEEK_SYSTEM_MESSAGE,
         )
         if response is not None:
+            result = {
+                "status": "success",
+                "challenge": None,
+                "solution": None
+            }
+            
             # extract the challenge which should be between <CHALLENGE> and </CHALLENGE>
             challenge_start = response.find("<CHALLENGE>")
             challenge_end = response.find("</CHALLENGE>")
             if challenge_start != -1 and challenge_end != -1:
                 challenge = response[challenge_start + len("<CHALLENGE>"):challenge_end]
+                result["challenge"] = challenge
                 log_to_socketio(challenge, title="Challenge", logType="info")
+            
             # extract the solution which should be between <SOLUTION> and </SOLUTION>
             solution_start = response.find("<SOLUTION>")
             solution_end = response.find("</SOLUTION>")
             if solution_start != -1 and solution_end != -1:
                 solution = response[solution_start + len("<SOLUTION>"):solution_end]
+                result["solution"] = solution
                 log_to_socketio(solution, title="Solution", logType="prime")
+            
+            print(json.dumps(result, indent=2))  # Print structured output
+            return result
         else:
-            log_to_socketio("DeepSeek API returned None", logType="error")
+            error = "DeepSeek API returned None"
+            log_to_socketio(error, logType="error")
+            print(json.dumps({"status": "error", "error": error}))
+            return None
     except Exception as e:
-        print(f"Error! Exceptions says: {e}")
+        error = f"Error! Exception says: {e}"
+        log_to_socketio(error, logType="error")
+        print(json.dumps({"status": "error", "error": error}))
         return None
-    return
 
 ### main loop
 if __name__ == "__main__": 
     if len(sys.argv) != 2:
-        print("Usage: python submit_DeepSeek.py <file_path>.  File should be a json file containing the extracted text from a webpage.")
+        error = "Usage: python submit_DeepSeek.py <file_path>. File should be a json file containing the extracted text from a webpage."
+        print(json.dumps({"status": "error", "error": error}))
         exit(1)
     
     file_path = sys.argv[1]
     
-    
     try:
         with open(file_path, 'r') as f:
-            raw_word_list = json.load(f)  # Assuming the JSON file contains an array of strings
-            if raw_word_list is not None:
-                log_to_socketio(f"raw text extracted from screen: \n{raw_word_list}")
+            data = json.load(f)
+            if isinstance(data, dict):
+                raw_word_list = data.get("lines", [])
+            else:
+                raw_word_list = data  # Assume it's the direct list of strings
+                
+            if raw_word_list:
+                log_to_socketio(f"Raw text extracted from screen: \n{raw_word_list}")
                 submit_for_code_solution(raw_word_list)
             else:
-                log_to_socketio("Could not load the file containing the extracted text", logType="error")
-        
+                error = "Could not load the extracted text - empty or invalid data"
+                log_to_socketio(error, logType="error")
+                print(json.dumps({"status": "error", "error": error}))
     except Exception as e:
-        print(f"Error! Exceptions says: {e}")
+        error = f"Error! Exception says: {e}"
+        print(json.dumps({"status": "error", "error": error}))
         exit(1)

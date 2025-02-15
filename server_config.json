@@ -1,5 +1,6 @@
 {
     "ip": "127.0.0.1",
-    "port": 5347,
-    "room": "cheddarbox_room"
+    "port": 5348,
+    "advertise_ip": "0.0.0.0",
+    "room": "33ter_room"
 }

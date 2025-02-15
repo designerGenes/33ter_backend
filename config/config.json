@@ -1,0 +1,22 @@
+{
+    "services": {
+        "main": {
+            "ip": "127.0.0.1",
+            "port": 5347,
+            "room": "33ter_room"
+        },
+        "publishMessage": {
+            "port": 5348,
+            "room": "33ter_room"
+        },
+        "processStream": {
+            "port": 5347,
+            "room": "33ter_room"
+        }
+    },
+    "environment": {
+        "venv_path": "venv",
+        "log_dir": "logs",
+        "screenshots_dir": "screenshots"
+    }
+}

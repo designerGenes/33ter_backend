@@ -36,7 +36,7 @@ def send_to_socketio(jsonObject, socketIO_server_host="localhost", socketIO_serv
     try:
         if "data" in jsonObject:
             if "room" not in jsonObject:
-                jsonObject["room"] = "cheddarbox_room"
+                jsonObject["room"] = "33ter_room"
         
         response = requests.post(
             f'http://{socketIO_server_host}:{socketIO_server_port}/broadcast',
@@ -58,15 +58,13 @@ def log_to_socketio(log_message, title=None, logType="info"):
     if title is None:
         title = logType
     send_to_socketio({
-                "room": "cheddarbox_room",
+                "room": "33ter_room",
                 "data": {
                     "title": title,
                     "message": log_message,
                     "logType": logType
                 }
             },
-            "localhost",
-            #socketIO_server_host,
-            MAGIC_DEFAULT_PORT)
-            #socketIO_server_port)
+            socketIO_server_host,  # Use discovered host instead of hardcoded localhost
+            socketIO_server_port)  # Use discovered port
     print(f"[{logType}]: \t {title}: \t {log_message}")

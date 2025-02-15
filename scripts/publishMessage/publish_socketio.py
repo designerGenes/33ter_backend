@@ -27,7 +27,7 @@ def load_server_details():
             config = json.load(f)
             ip = config["ip"] or "localhost"
             port = 5348 #config["port"] or 5348
-            room = config["room"] or "cheddarbox_room"
+            room = config["room"] or "33ter_room"
             return ip, port, room
     except Exception as e:
         print(f"Error loading server details: {e}")

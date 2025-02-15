@@ -32,8 +32,8 @@ sio.attach(app)
 
 # Add constants after the existing imports
 SERVICE_TYPE = "_socketio._tcp.local."
-SERVICE_NAME = "ChatterboxServer"
-DEFAULT_ROOM = "cheddarbox_room"
+SERVICE_NAME = "33terServer"
+DEFAULT_ROOM = "33ter_room"
 
 # Modify get_local_ip to prefer non-loopback interfaces
 def get_local_ip():
@@ -56,7 +56,7 @@ def get_local_ip():
 # Store connected clients and rooms
 connected_clients = {}
 rooms = {
-    "cheddarbox_room": {  # Default room
+    "33ter_room": {  # Default room
         "clients": set(),
         "messages": []
     }
@@ -68,7 +68,7 @@ async def connect(sid, environ):
     logger.info(f"Client connected: {sid}")
     connected_clients[sid] = {"rooms": []}
     # Auto-join the default room
-    await join_room(sid, {"room": "cheddarbox_room"})
+    await join_room(sid, {"room": "33ter_room"})
 
 @sio.event
 async def get_rooms(sid):
@@ -194,7 +194,7 @@ async def health_handler(request):
 async def broadcast_handler(request):
     try:
         data = await request.json()
-        room = data.get("room", "cheddarbox_room")  # Default to cheddarbox_room if not specified
+        room = data.get("room", "33ter_room")  # Default to 33ter_room if not specified
         message_data = data.get("data")
         
         if message_data:
@@ -236,7 +236,7 @@ async def start_server():
     advertise_ip = get_local_ip()
     
     # Generate the server_config.json file with the host IP
-    generate_server_config(advertise_ip, port, "cheddarbox_room")
+    generate_server_config(advertise_ip, port, "33ter_room")
 
     # Broadcast server details using mDNS
     zeroconf, service_info = await broadcast_mdns(advertise_ip, port)
@@ -297,12 +297,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Socket.IO Server')
     parser.add_argument('-k', '--kill', action='store_true', 
                        help='Kill any running instances of the server')
+    parser.add_argument('--port', type=int, default=5348,
+                       help='Port to run the server on')
+    parser.add_argument('--room', type=str, default='33ter_room',
+                       help='Default room name')
     args = parser.parse_args()
 
     if args.kill:
         killed = find_and_kill_server()
         logger.info(f"Killed {killed} server instance(s)")
         sys.exit(0)
+
+    # Update port and room from arguments
+    port = args.port
+    DEFAULT_ROOM = args.room
 
     try:
         asyncio.run(start_server())

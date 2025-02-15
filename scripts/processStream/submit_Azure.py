@@ -41,37 +41,53 @@ def process_screenshot(file_path):
             language="en"
         )
     except Exception as e:
-        log_to_socketio(f"Error analyzing image: {str(e)}", "Azure Vision", "error")
+        error_msg = f"Error analyzing image: {str(e)}"
+        log_to_socketio(error_msg, "Azure Vision", "error")
+        print(json.dumps({"error": error_msg}))
         return
 
-    # Save the OCR results to a file
+    # Save the OCR results to a file and also prepare output
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     
-    # Adjust output path based on run mode
     if run_mode == "docker":
         logs_dir = "/app/logs"
     else:
         logs_dir = os.path.join(os.getcwd(), "logs")
     os.makedirs(logs_dir, exist_ok=True)
-    ocr_output_file = os.path.join(logs_dir, f"{timestamp}_azure_ocr_response.json")
-
+    
+    ocr_output = None
     if result.read is not None:
         lines = ["".join(line.text) for line in result.read.blocks[0].lines]
-        with open(ocr_output_file, "w") as f:
-            json.dump(lines, f)
-        log_to_socketio(f"OCR completed successfully", "Azure Vision", "info")
-    else:
-        log_to_socketio("No text detected in image", "Azure Vision", "warning")
-
-    # Adjust script path based on run mode
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-
-    if run_mode == "docker":
-        submit_deepseek_script = "/app/submit_DeepSeek.py"
-    else:
-        submit_deepseek_script = os.path.join(current_dir, "submit_DeepSeek.py")
+        ocr_output = {
+            "timestamp": timestamp,
+            "lines": lines,
+            "status": "success"
+        }
         
-    subprocess.run(["python3", submit_deepseek_script, ocr_output_file])
+        # Save to file
+        ocr_output_file = os.path.join(logs_dir, f"{timestamp}_azure_ocr_response.json")
+        with open(ocr_output_file, "w") as f:
+            json.dump(ocr_output, f, indent=2)
+            
+        log_to_socketio("OCR completed successfully", "Azure Vision", "info")
+        print(json.dumps(ocr_output))  # Print for process output capture
+        
+        # Call DeepSeek script
+        if run_mode == "docker":
+            submit_deepseek_script = "/app/submit_DeepSeek.py"
+        else:
+            submit_deepseek_script = os.path.join(os.path.dirname(__file__), "submit_DeepSeek.py")
+        
+        try:
+            subprocess.run(["python3", submit_deepseek_script, ocr_output_file], check=True)
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Error running DeepSeek analysis: {str(e)}"
+            log_to_socketio(error_msg, "Azure Vision", "error")
+            print(json.dumps({"error": error_msg}))
+    else:
+        error_msg = "No text detected in image"
+        log_to_socketio(error_msg, "Azure Vision", "warning")
+        print(json.dumps({"error": error_msg}))
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

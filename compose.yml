@@ -1,4 +1,4 @@
-name: chatterbox
+name: 33ter
 services:
   process-stream:
     
@@ -37,7 +37,7 @@ services:
     depends_on:
       - publish-message
     networks:
-      - chatterbox-network
+      - 33ter-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5346/health"]
       interval: 30s
@@ -81,7 +81,7 @@ services:
         max-size: "10m"
         max-file: "3"
     networks:
-      - chatterbox-network
+      - 33ter-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5347/health"]
       interval: 30s
@@ -91,5 +91,5 @@ services:
     restart: unless-stopped
 
 networks:
-  chatterbox-network:
+  33ter-network:
     driver: bridge
