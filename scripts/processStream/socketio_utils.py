@@ -2,9 +2,11 @@ import os
 import requests
 import json
 import time
-from typing import Optional
+from typing import Optional, Literal
 
-def log_to_socketio(message: str, title: str = "Message", logType: str = "info") -> None:
+LogType = Literal["Info", "Warning", "Prime"]
+
+def log_to_socketio(message: str, title: str = "Message", logType: LogType = "Info") -> None:
     """Send a log message to the Socket.IO server."""
     try:
         run_mode = os.getenv("RUN_MODE", "local").lower()
@@ -15,7 +17,7 @@ def log_to_socketio(message: str, title: str = "Message", logType: str = "info")
             "data": {
                 "title": title,
                 "message": message,
-                "type": logType
+                "logType": logType
             }
         }
         

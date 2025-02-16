@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 import time
 import re
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, json
 import requests
 from threading import Thread, Lock
 import subprocess
@@ -15,6 +15,13 @@ import socket
 import json
 import datetime
 import logging
+import asyncio
+# import JSONEncoder from Flask
+
+# from flask.json.provider import JSONProvider, JSONEncoder
+from asgiref.wsgi import WsgiToAsgi
+from hypercorn.config import Config
+from hypercorn.asyncio import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import WSGIRequestHandler
 from local_ocr import process_image
@@ -34,6 +41,7 @@ class CustomFlask(Flask):
 
 app = CustomFlask(__name__)
 app.logger.disabled = True
+asgi_app = WsgiToAsgi(app)
 
 # Disable Werkzeug's default request logging
 WSGIRequestHandler.log = lambda *args, **kwargs: None
@@ -137,7 +145,7 @@ def cleanup_old_files():
                         log_debug(f"Deleted old file: {file_name}")
         time.sleep(60)  # Run every minute
 
-def submit_to_deepseek(ocr_result):
+async def submit_to_deepseek(ocr_result):
     """Submit OCR results to DeepSeek for processing."""
     try:
         # Save OCR results to a temporary file for logging
@@ -153,18 +161,13 @@ def submit_to_deepseek(ocr_result):
         from deepseek_client import analyze_text
         
         log_debug("Sending text to DeepSeek for analysis...", "DeepSeek", "info")
-        log_to_socketio(
-            "Analyzing the extracted text to find a coding challenge...",
-            "Processing Status",
-            "progress"
-        )
         
-        result = analyze_text(ocr_result.get("lines", []))
+        result = await analyze_text(ocr_result.get("lines", []))
         
         if result["status"] == "success":
-            # Format and send challenge text if found
-            if result["challenge"]:
-                log_debug("Challenge text extracted successfully", "DeepSeek", "Info")
+            # Only process challenge if one was actually found
+            if result["challenge"] is not None:
+                log_debug("Challenge found, sending to UI", "DeepSeek", "info")
                 challenge_message = (
                     "📝 Challenge Description:\n\n"
                     f"{result['challenge']}\n\n"
@@ -172,20 +175,20 @@ def submit_to_deepseek(ocr_result):
                 )
                 log_to_socketio(challenge_message, "Challenge", "Info")
 
-            # Format and send solution if found
-            if result["solution"]:
-                log_debug("Solution generated successfully", "DeepSeek", "Info")
-                solution_message = (
-                    "Here's a solution to the challenge:\n\n"
-                    f"{result['solution']}\n\n"
-                    "This solution emphasizes:\n"
-                    "• Clean, maintainable code\n"
-                    "• Optimal time/space complexity\n"
-                    "• Language-specific best practices"
-                )
-                log_to_socketio(solution_message, "Solution", "Prime")
-            else:
-                if result["challenge"]:
+                # Only attempt solution if we had a real challenge
+                if result["solution"]:
+                    log_debug("Solution generated, sending to UI", "DeepSeek", "info")
+                    solution_message = (
+                        "Here's a solution to the challenge:\n\n"
+                        f"{result['solution']}\n\n"
+                        "This solution emphasizes:\n"
+                        "• Clean, maintainable code\n"
+                        "• Optimal time/space complexity\n"
+                        "• Language-specific best practices"
+                    )
+                    log_to_socketio(solution_message, "Solution", "Prime")
+                else:
+                    log_debug("No solution generated for challenge", "DeepSeek", "warning")
                     log_to_socketio(
                         "I found a coding challenge but couldn't generate a solution.\n"
                         "This might be due to:\n"
@@ -196,15 +199,17 @@ def submit_to_deepseek(ocr_result):
                         "Processing Status", 
                         "Warning"
                     )
-            
-            if not result["challenge"]:
+            else:
+                # No challenge was found - this is normal and should be a warning
+                log_debug("No coding challenge found in text", "DeepSeek", "info")
                 log_to_socketio(
                     "No coding challenge was found in this screenshot.\n\n"
+                    "I analyzed the text but didn't find anything that looks like a programming challenge.\n\n"
                     "Make sure:\n"
                     "• The challenge text is clearly visible\n"
-                    "• The screenshot includes the full problem description\n"
-                    "• There isn't too much unrelated text\n\n"
-                    "Try taking another screenshot focusing on the challenge.",
+                    "• The screenshot includes actual programming problem statements\n"
+                    "• The text isn't just general documentation or discussion\n\n"
+                    "Try taking another screenshot focusing on the challenge description.",
                     "Analysis Result",
                     "Warning"
                 )
@@ -240,7 +245,7 @@ def submit_to_deepseek(ocr_result):
         )
         return False
 
-def process_latest_screenshot():
+async def process_latest_screenshot():
     """Process the most recent screenshot file."""
     try:
         files = [os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) 
@@ -251,8 +256,8 @@ def process_latest_screenshot():
         most_recent_file = max(files, key=os.path.getmtime)
         filename = os.path.basename(most_recent_file)
         
-        # Add small delay to ensure file write is complete
-        time.sleep(0.1)
+        # Add longer delay to ensure file write is complete
+        time.sleep(0.5)  # Increased from 0.1 to 0.5 seconds
         
         # Process with local OCR
         log_debug("Starting OCR processing...", "Process", "info")
@@ -268,7 +273,9 @@ def process_latest_screenshot():
                 os.fsync(f.fileno())
 
             # Display extracted text with relative positioning
-            log_debug("\nText extracted:", "Process", "info")
+            log_debug("\n===============================", "Process", "info")
+            log_debug("       Extracted Text:", "Process", "info")
+            log_debug("===============================", "Process", "info")
             
             # Get image dimensions from OCR result
             img_width = result.get("image_width", 0)
@@ -303,7 +310,7 @@ def process_latest_screenshot():
                 
                 if current_group:
                     vertical_groups.append(sorted(current_group, key=lambda x: x[0]))
-                
+
                 # Display text with proportional spacing
                 for group in vertical_groups:
                     line = ""
@@ -320,9 +327,11 @@ def process_latest_screenshot():
                 for line in result.get("lines", []):
                     log_debug(line.get("text", ""), "Process", "info")
 
+            log_debug("===============================\n", "Process", "info")
+            
             # Start DeepSeek processing
-            log_debug("\nSending to DeepSeek... away we go!", "Process", "info")
-            success = submit_to_deepseek(result)
+            log_debug("Sending to DeepSeek... away we go!", "Process", "info")
+            success = await submit_to_deepseek(result)
             
             if success:
                 log_debug("Processing workflow completed successfully", "Process", "info")
@@ -352,43 +361,79 @@ def upload():
     # Save file with explicit flush and sync
     try:
         file.save(file_path)
-        # Force sync to filesystem
-        with open(file_path, 'rb') as f:
-            os.fsync(f.fileno())
+        
+        # Verify file was written correctly with multiple retries
+        max_retries = 3
+        retry_delay = 0.1
+        success = False
+        
+        for attempt in range(max_retries):
+            try:
+                # Force sync to filesystem
+                with open(file_path, 'rb') as f:
+                    # For PNG files, verify the header
+                    if file_path.lower().endswith('.png'):
+                        png_signature = b'\x89PNG\r\n\x1a\n'
+                        file_signature = f.read(8)
+                        if file_signature != png_signature:
+                            if attempt < max_retries - 1:
+                                time.sleep(retry_delay)
+                                continue
+                            raise IOError("Invalid PNG signature")
+                    
+                    # Read the rest to verify complete file and get size
+                    f.seek(0)
+                    content = f.read()
+                    if len(content) < 100:  # Basic sanity check for minimum file size
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        raise IOError("File too small - likely corrupted")
+                    
+                    os.fsync(f.fileno())
+                    success = True
+                    break
+            except Exception:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(retry_delay)
+                continue
+        
+        if not success:
+            raise IOError("Failed to verify file integrity after multiple attempts")
+                
         if not MUTE_PROCESS_MESSAGES:
-            log_debug(f"Saved screenshot: {file.filename}", "Process", "info")
+            log_debug(f"Saved and verified screenshot: {file.filename}", "Process", "info")
         return "File received", 200
     except Exception as e:
         log_debug(f"Error saving file: {str(e)}", "Process", "error")
+        # Try to clean up corrupted file
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except:
+            pass
         return str(e), 500
 
 @app.route('/trigger', methods=['POST'])
-def trigger():
+async def trigger():
     """Handle manual trigger to process the most recent file."""
-    def process_async():
-        log_debug("Manual trigger received - starting processing workflow", "Process", "info")
-        result, status_code = process_latest_screenshot()
-        if status_code != 200:
-            log_debug(f"Processing workflow failed: {result}", "Process", "error")
-    
-    # Start processing in background thread
-    Thread(target=process_async, daemon=True).start()
-    return "", 204  # Return immediately to prevent UI lockup
+    log_debug("Manual trigger received - starting processing workflow", "Process", "info")
+    result, status_code = await process_latest_screenshot()
+    if status_code != 200:
+        log_debug(f"Processing workflow failed: {result}", "Process", "error")
+    return "", 204  # Return immediately
 
 @app.route('/signal', methods=['POST'])
-def signal():
+async def signal():
     """Handle signal to process the most recent file immediately."""
-    def process_async():
-        log_debug("Signal received - processing latest screenshot", "Process", "info")
-        result, status_code = process_latest_screenshot()
-        if status_code != 200:
-            log_debug(f"Processing failed: {result}", "Process", "error")
-        else:
-            log_debug("Processing completed successfully", "Process", "info")
-    
-    # Start processing in background
-    Thread(target=process_async, daemon=True).start()
-    return "", 204  # Return immediately
+    log_debug("Signal received - processing latest screenshot", "Process", "info")
+    result, status_code = await process_latest_screenshot()
+    if status_code != 200:
+        log_debug(f"Processing failed: {result}", "Process", "error")
+    else:
+        log_debug("Processing completed successfully", "Process", "info")
+    return "", 204
 
 @app.route('/mute', methods=['POST'])
 def toggle_mute():
@@ -412,8 +457,11 @@ if __name__ == '__main__':
     # Start the cleanup thread
     Thread(target=cleanup_old_files, daemon=True).start()
 
-    # Start the Flask server with fixed port
+    # Start the Flask server with fixed port using Hypercorn
     port = get_server_port()
     print(f"Starting server on port {port}")
     save_port_info(port)
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
+    
+    config = Config()
+    config.bind = [f"0.0.0.0:{port}"]
+    asyncio.run(serve(asgi_app, config))

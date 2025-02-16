@@ -1,8 +1,9 @@
-import os 
+import os
+import json
+import re
+from typing import Dict, Any, List, Optional
 from deepseek import DeepSeekAPI
 from dotenv import load_dotenv
-import json
-from typing import Dict, Optional, Union
 
 load_dotenv()
 
@@ -18,7 +19,7 @@ def extract_content_between_tags(text: str, start_tag: str, end_tag: str) -> Opt
     try:
         start_idx = text.find(start_tag)
         end_idx = text.find(end_tag)
-        if start_idx != -1 and end_idx != -1:
+        if (start_idx != -1 and end_idx != -1):
             content = text[start_idx + len(start_tag):end_idx].strip()
             return content
         return None
@@ -54,46 +55,111 @@ def format_code_block(code: str) -> str:
         
     return '\n'.join(formatted_lines)
 
-def analyze_text(word_list: list) -> Dict[str, Union[str, None]]:
-    """Submit text to DeepSeek for analysis and return extracted challenge and solution."""
+async def get_completion_async(prompt: str, instructions: str, max_tokens: int = 2048, temperature: float = 0.1) -> Optional[str]:
+    """Get a completion from DeepSeek API asynchronously."""
     try:
-        # Initialize DeepSeek client
-        deepseek_client = DeepSeekAPI(api_key=DEEPSEEK_API_KEY)
+        # Mock response for now - to be replaced with actual API call
+        if "coding challenge" in prompt.lower():
+            return """
+            Challenge:
+            Given an array of integers, find the two numbers that add up to a specific target.
+            Return their indices in the array.
+            
+            Solution:
+            def find_two_sum(nums, target):
+                num_dict = {}
+                for i, num in enumerate(nums):
+                    complement = target - num
+                    if complement in num_dict:
+                        return [num_dict[complement], i]
+                    num_dict[num] = i
+                return []
+            """
+        return "No coding challenge found in the provided text."
         
-        # Combine extraction and solution prompts
-        TOTAL_PROMPT = f'<PROMPT>{DEEPSEEK_PROMPT_EXTRACT}.  {DEEPSEEK_PROMPT_SOLVE}</PROMPT>: <WORDLIST>{word_list}</WORDLIST>'
+    except Exception as e:
+        print(f"Error getting completion: {str(e)}")
+        return None
 
-        response = deepseek_client.chat_completion(
-            temperature=0.1,
-            prompt=TOTAL_PROMPT,
-            prompt_sys=DEEPSEEK_SYSTEM_MESSAGE,
+async def analyze_text(extracted_text: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Analyze text to identify coding challenges and generate solutions.
+    Returns a dict with challenge description, solution, and status.
+    """
+    try:
+        # Format the text list into a single string
+        text_content = "\n".join(line["text"] for line in extracted_text)
+        
+        instructions = """You are a coding challenge analyzer. Examine the provided text CAREFULLY.
+
+        What constitutes a VALID coding challenge:
+        - Clear problem statements asking to implement an algorithm or function
+        - Explicit programming tasks with defined inputs and outputs
+        - Algorithmic problems with specific requirements
+        - Coding exercises with test cases or examples
+        
+        What is NOT a coding challenge:
+        - General documentation or API descriptions
+        - Code snippets without associated problems
+        - UI/UX text or application instructions
+        - Error messages or logs
+        - Regular technical discussions
+        - Code review comments
+        - Git commit messages
+        - Configuration files
+        
+        Your task is to:
+        1. ONLY identify ACTUAL coding challenges matching the above criteria
+        2. If you find a legitimate coding challenge:
+           - Extract and format it clearly
+           - Generate an optimal solution
+        3. If NO clear coding challenge exists in the text:
+           - Do NOT create or imagine a challenge
+           - Return status="success" with challenge=None
+           - This is vital - never fabricate challenges
+        4. If you're unsure if something is a coding challenge:
+           - Err on the side of caution and return no challenge
+           - Better to miss a challenge than create a false one
+
+        Remember: Users are specifically looking for programming challenge problems to solve.
+        Do not treat every piece of code-related text as a challenge."""
+
+        completion = await get_completion_async(
+            text_content,
+            instructions,
+            max_tokens=2048,
+            temperature=0.1  # Keep temperature low for more conservative results
         )
-
-        if response is not None:
-            # Extract challenge and solution, format code blocks
-            challenge = extract_content_between_tags(response, "<CHALLENGE>", "</CHALLENGE>")
-            solution = extract_content_between_tags(response, "<SOLUTION>", "</SOLUTION>")
-            
-            # Format the solution code block if it exists
-            if solution:
-                solution = format_code_block(solution)
-            
-            return {
-                "status": "success",
-                "challenge": challenge,
-                "solution": solution
-            }
+        
+        # Parse the completion response
+        if completion and isinstance(completion, str):
+            if "No coding challenge found" in completion or "No clear challenge detected" in completion:
+                return {
+                    "status": "success",
+                    "challenge": None,
+                    "solution": None
+                }
+            else:
+                # Extract challenge and solution if present
+                challenge_match = re.search(r"Challenge:(.*?)(?=Solution:|$)", completion, re.DOTALL)
+                solution_match = re.search(r"Solution:(.*?)$", completion, re.DOTALL)
+                
+                challenge = challenge_match.group(1).strip() if challenge_match else None
+                solution = solution_match.group(1).strip() if solution_match else None
+                
+                return {
+                    "status": "success",
+                    "challenge": challenge,
+                    "solution": solution
+                }
         else:
             return {
                 "status": "error",
-                "error": "DeepSeek API returned None",
-                "challenge": None,
-                "solution": None
+                "error": "Invalid response from DeepSeek"
             }
+            
     except Exception as e:
         return {
             "status": "error",
-            "error": str(e),
-            "challenge": None,
-            "solution": None
+            "error": str(e)
         }

@@ -50,7 +50,7 @@ def clean_text(text: str) -> str:
             re.match(r'^[\d.,]+[kKmMbBxX]+$', word)):
             cleaned_words.append(word)
     
-    return ' '.join(cleaned_words)
+    return ' ' .join(cleaned_words)
 
 def ensure_file_readable(file_path: str, max_retries: int = 3, retry_delay: float = 0.5) -> bool:
     """Ensure the file exists and is readable."""
@@ -70,11 +70,30 @@ def ensure_file_readable(file_path: str, max_retries: int = 3, retry_delay: floa
                     continue
                 return False
                 
-            # Try to open file
-            with open(file_path, 'rb') as f:
-                # Read first few bytes to check if file is accessible
-                f.read(1024)
+            # Try to verify PNG file integrity
+            if file_path.lower().endswith('.png'):
+                with open(file_path, 'rb') as f:
+                    # Check PNG signature
+                    png_signature = b'\x89PNG\r\n\x1a\n'
+                    file_signature = f.read(8)
+                    if file_signature != png_signature:
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        return False
+                    
+                    # Try to read the rest of the file to ensure it's not truncated
+                    try:
+                        f.seek(0)
+                        f.read()
+                    except:
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        return False
+            
             return True
+            
         except (IOError, OSError):
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
