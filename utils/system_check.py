@@ -166,35 +166,23 @@ def check_system_dependencies() -> List[Tuple[str, Tuple[bool, str]]]:
     return checks
 
 def print_system_status():
-    """Print system status in a user-friendly format."""
-    print("\n=== System Requirements Check ===")
-    print(f"OS: {platform.system()} {platform.release()}")
+    """Print basic system information and requirements check."""
+    print("\n=== System Check ===")
     
-    if platform.system() == "Linux":
-        distro = get_linux_distribution()
-        if distro:
-            print(f"Distribution: {distro}")
+    # Check Python version
+    python_version = sys.version.split()[0]
+    print(f"Python Version: {python_version}")
+    if tuple(map(int, python_version.split('.'))) < (3, 9):
+        print("Warning: Python 3.9 or higher recommended")
     
-    checks = check_system_dependencies()
-    all_passed = True
-    warnings = []
+    # Check operating system
+    os_name = platform.system()
+    print(f"Operating System: {os_name}")
+    if os_name not in ['Darwin', 'Linux']:
+        print("Warning: This application is primarily tested on macOS and Linux")
     
-    for name, (status, message) in checks:
-        status_symbol = "✓" if status else "✗"
-        print(f"{status_symbol} {name}: {message}")
-        if not status:
-            if "warning" in message.lower():
-                warnings.append(message)
-            else:
-                all_passed = False
+    # Check for virtual environment
+    in_venv = sys.prefix != sys.base_prefix
+    print(f"Virtual Environment: {'Active' if in_venv else 'Not Active'}")
     
-    if warnings:
-        print("\n⚠️  Warnings:")
-        for warning in warnings:
-            print(f"  - {warning}")
-    
-    if not all_passed:
-        print("\n❌ Please install missing dependencies before continuing.")
-        sys.exit(1)
-    
-    print("\n✓ All system requirements met!")
+    print("==================")

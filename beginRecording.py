@@ -8,6 +8,7 @@ import sys
 import os
 import json
 from dotenv import load_dotenv
+from utils.path_config import get_screenshots_dir, get_frequency_config_file, get_temp_dir
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -23,9 +24,13 @@ running = True
 paused = False
 prev_pause_state = False  # Track previous pause state
 screenshot_frequency = 4.0  # Default frequency in seconds
-frequency_config_file = "./.config/screenshot_frequency.json"
 last_screenshot_time = 0
 last_frequency_check = 0  # Add timestamp for frequency checks
+
+# Initialize paths using centralized config
+SCREENSHOTS_DIR = get_screenshots_dir()
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+frequency_config_file = get_frequency_config_file()
 
 def ensure_config_dir():
     os.makedirs(os.path.dirname(frequency_config_file), exist_ok=True)
@@ -51,7 +56,7 @@ def check_reload_frequency():
     # Check frequency file every 0.5 seconds
     if current_time - last_frequency_check >= 0.5:
         last_frequency_check = current_time
-        reload_file = "./.tmp/reload_frequency"
+        reload_file = os.path.join(get_temp_dir(), "reload_frequency")
         
         # Regular file check
         if os.path.exists(reload_file):
@@ -69,8 +74,8 @@ def signal_handler(sig, frame):
     running = False
 
 def check_pause_resume():
-    pause_dir = "./.tmp/signal_pause_capture"
-    resume_dir = "./.tmp/signal_resume_capture"
+    pause_dir = os.path.join(get_temp_dir(), "signal_pause_capture")
+    resume_dir = os.path.join(get_temp_dir(), "signal_resume_capture")
     
     if os.path.exists(pause_dir):
         return True
@@ -116,14 +121,17 @@ while running:
         if not paused and (current_time - last_screenshot_time) >= screenshot_frequency:
             # Capture the screenshot
             screenshot = pyautogui.screenshot()
-
-            # Save the screenshot to an in-memory buffer
+            file_name = f"{int(current_time)}_capture.png"
+            
+            # Save screenshot to buffer for upload
             buffer = BytesIO()
             screenshot.save(buffer, format="PNG")
             buffer.seek(0)
 
-            # Send the screenshot to the server
-            file_name = f"{int(current_time)}_capture.png"
+            # Optionally save locally in the configured screenshots directory
+            screenshot.save(os.path.join(SCREENSHOTS_DIR, file_name))
+            
+            # Send to server
             response = requests.post(API_URL, files={"file": (file_name, buffer)})
             logging.info(f"Sent screenshot: {file_name}, Response: {response.status_code}")
             

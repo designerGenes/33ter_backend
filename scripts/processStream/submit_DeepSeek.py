@@ -1,7 +1,4 @@
-from curses import raw
-from math import log
 import os 
-from debugpy import log_to
 from deepseek import DeepSeekAPI
 from dotenv import load_dotenv
 import json, sys
@@ -18,7 +15,6 @@ DEEPSEEK_PROMPT_SOLVE="Afterwards, you must create a solution that solves the ex
 # Initialize deepseek client
 deepseek_client = DeepSeekAPI(api_key=DEEPSEEK_API_KEY)
 
-# Remove run_mode from global scope and move logs_dir setup into a function
 def setup_logs_dir():
     run_mode = os.getenv("RUN_MODE", "local").lower()
     logs_dir = "/app/logs" if run_mode == "docker" else os.path.join(os.getcwd(), "logs")
@@ -47,7 +43,7 @@ def submit_for_code_solution(raw_word_list):
             challenge_start = response.find("<CHALLENGE>")
             challenge_end = response.find("</CHALLENGE>")
             if challenge_start != -1 and challenge_end != -1:
-                challenge = response[challenge_start + len("<CHALLENGE>"):challenge_end]
+                challenge = response[challenge_start + len("<CHALLENGE>"):challenge_end].strip()
                 result["challenge"] = challenge
                 log_to_socketio(challenge, title="Challenge", logType="info")
             
@@ -55,20 +51,21 @@ def submit_for_code_solution(raw_word_list):
             solution_start = response.find("<SOLUTION>")
             solution_end = response.find("</SOLUTION>")
             if solution_start != -1 and solution_end != -1:
-                solution = response[solution_start + len("<SOLUTION>"):solution_end]
+                solution = response[solution_start + len("<SOLUTION>"):solution_end].strip()
                 result["solution"] = solution
                 log_to_socketio(solution, title="Solution", logType="prime")
             
-            print(json.dumps(result, indent=2))  # Print structured output
+            # Print structured output that can be parsed by the parent process
+            print(json.dumps(result))
             return result
         else:
             error = "DeepSeek API returned None"
-            log_to_socketio(error, logType="error")
+            log_to_socketio(error, title="DeepSeek", logType="error")
             print(json.dumps({"status": "error", "error": error}))
             return None
     except Exception as e:
         error = f"Error! Exception says: {e}"
-        log_to_socketio(error, logType="error")
+        log_to_socketio(error, title="DeepSeek", logType="error")
         print(json.dumps({"status": "error", "error": error}))
         return None
 
@@ -90,11 +87,10 @@ if __name__ == "__main__":
                 raw_word_list = data  # Assume it's the direct list of strings
                 
             if raw_word_list:
-                log_to_socketio(f"Raw text extracted from screen: \n{raw_word_list}")
                 submit_for_code_solution(raw_word_list)
             else:
                 error = "Could not load the extracted text - empty or invalid data"
-                log_to_socketio(error, logType="error")
+                log_to_socketio(error, title="DeepSeek", logType="error")
                 print(json.dumps({"status": "error", "error": error}))
     except Exception as e:
         error = f"Error! Exception says: {e}"

@@ -10,6 +10,8 @@ import threading
 from queue import Queue
 import json
 import requests  # Add requests import
+import logging  # Add logging import
+from utils.path_config import get_config_dir  # Add path_config import
 
 # Color pair definitions (will be initialized in TerminalHub)
 HEADER_PAIR = 1
@@ -23,10 +25,11 @@ PROCESS_VIEW = 8
 SOCKET_VIEW = 9
 
 class ProcessManager:
-    def __init__(self, config_path='config/config.json'):
+    def __init__(self):
         self.processes = {}
         self.output_queues = {}
         self.stop_threads = {}
+        config_path = os.path.join(get_config_dir(), 'config.json')
         self.config = self.load_config(config_path)
 
     def load_config(self, config_path):
@@ -34,8 +37,14 @@ class ProcessManager:
             return json.load(f)
 
     def start_process(self, name, cmd, cwd=None, env=None):
+        """Start a process and capture its output."""
         if name in self.processes and self.processes[name].poll() is None:
             return
+
+        # Set up basic environment if none provided
+        if env is None:
+            env = os.environ.copy()
+            env["RUN_MODE"] = "local"
 
         process = subprocess.Popen(
             cmd,
@@ -93,63 +102,62 @@ class ProcessManager:
     def get_output(self, name):
         return list(self.output_queues.get(name, []))
 
+import os
+import sys
+import json
+import time
+import curses
+import subprocess
+import logging
+import requests
+from threading import Thread
+from utils.path_config import (
+    get_screenshots_dir, 
+    get_app_root, 
+    get_config_dir, 
+    get_temp_dir,
+    get_frequency_config_file
+)
+
 class TerminalHub:
     def __init__(self, force_setup=False):
-        self.app_dir = os.path.dirname(os.path.abspath(__file__))
-        self.config = self.load_config()
-        self.process_manager = ProcessManager(os.path.join(self.app_dir, 'config/config.json'))
+        self.app_dir = get_app_root()
+        self.screenshots_dir = get_screenshots_dir()
+        self.venv_path = os.path.join(self.app_dir, "venv")  # Add venv path
+        
+        self.config = {}
+        self.load_config()
+        self.process_manager = ProcessManager()  # Initialize the ProcessManager
         self.current_view = "main"
-        self.views = ["main", "screenshot", "process", "socket"]
-        self.venv_path = os.path.join(self.app_dir, self.config['environment']['venv_path'])
-        self._environment_validated = False
         self.help_active = False
-        self.post_message_active = False  # Add state for post message form
-        self.previous_view = None
-        self.muted = False  # Add muted state
-        self.last_trigger_time = 0  # Add timestamp for trigger cooldown
-        self.trigger_cooldown = 30  # 30 second cooldown
+        self.post_message_active = False
         self.current_frequency = 4.0
+        self.muted = False
+        self.trigger_cooldown = 30  # seconds
+        self.last_trigger_time = 0
         self.load_screenshot_frequency()
-        # Update screenshots_dir to point to process server's directory
-        self.screenshots_dir = os.path.join(self.app_dir, "scripts/processStream/screenshots")
         os.makedirs(self.screenshots_dir, exist_ok=True)
         
+        # Set up the environment if needed
         if force_setup:
-            print("Force setup requested...")
             self.cleanup_venv()
+        if not os.path.exists(self.venv_path):
             self.setup_venv()
         else:
-            # Try to set up environment variables first
-            self.setup_env_vars()
-            
-            # Add venv site-packages to Python path for proper imports
-            venv_site_packages = os.path.join(self.venv_path, "lib/python3.9/site-packages")
-            if os.path.exists(venv_site_packages):
-                sys.path.insert(0, venv_site_packages)
-            
-            # Only proceed with validation if we can't import required packages
-            try:
-                import pyautogui
-                import socketio
-                import aiohttp
-                import zeroconf
-                from dotenv import load_dotenv
-                print("Environment validated, using existing setup...")
-                self._environment_validated = True
-            except ImportError as e:
-                print(f"Environment setup needed: {e}")
-                self.setup_venv()
+            self.setup_env_vars()  # Just set up environment variables for existing venv
 
     def load_config(self):
-        config_path = os.path.join(self.app_dir, 'config/config.json')
+        config_path = os.path.join(get_config_dir(), 'config.json')
         with open(config_path) as f:
-            return json.load(f)
+            self.config = json.load(f)
+        self.env = os.environ.copy()  # Initialize environment variables
+        self.env["RUN_MODE"] = "local"  # Set RUN_MODE
 
     def setup_env_vars(self):
         """Set up environment variables without reinstalling"""
         self.env = os.environ.copy()
         self.env["RUN_MODE"] = "local"
-        self.env["PATH"] = f"{os.path.join(self.venv_path, 'bin')}:{self.env.get('PATH', '')}"
+        self.env["PATH"] = f"{os.path.join(self.venv_path, 'bin')}{os.pathsep}{self.env.get('PATH', '')}"
         self.env["VIRTUAL_ENV"] = self.venv_path
         
         # Remove any Conda-related environment variables
@@ -159,7 +167,6 @@ class TerminalHub:
             
         # Import required package
         try:
-            global psutil
             import psutil
         except ImportError:
             print("Warning: psutil not available in current environment")
@@ -171,8 +178,6 @@ class TerminalHub:
             except Exception as e:
                 print(f"Failed to install psutil: {e}")
                 print("Continuing without process management features...")
-                global psutil
-                psutil = None
 
     def cleanup_venv(self):
         """Remove existing virtual environment if it exists"""
@@ -325,7 +330,7 @@ class TerminalHub:
         # Start Screenshot Taker
         self.process_manager.start_process(
             "screenshot",
-            f"{self.venv_path}/bin/python3 beginRecording.py",
+            f"{self.venv_path}/bin/python3 {os.path.join(self.app_dir, 'beginRecording.py')}",
             cwd=self.app_dir,
             env=self.env
         )
@@ -333,7 +338,7 @@ class TerminalHub:
         # Start Process Screenshots server
         self.process_manager.start_process(
             "process",
-            f"{self.venv_path}/bin/python3 server_process_stream.py --port {self.config['services']['processStream']['port']}",
+            f"{self.venv_path}/bin/python3 {os.path.join(self.app_dir, 'scripts/processStream/server_process_stream.py')} --port {self.config['services']['processStream']['port']}",
             cwd=os.path.join(self.app_dir, "scripts/processStream"),
             env=self.env
         )
@@ -342,7 +347,7 @@ class TerminalHub:
         socket_config = self.config['services']['publishMessage']
         self.process_manager.start_process(
             "socket",
-            f"{self.venv_path}/bin/python3 server_socketio.py --port {socket_config['port']} --room {socket_config['room']}",
+            f"{self.venv_path}/bin/python3 {os.path.join(self.app_dir, 'scripts/publishMessage/server_socketio.py')} --port {socket_config['port']} --room {socket_config['room']}",
             cwd=os.path.join(self.app_dir, "scripts/publishMessage"),
             env=self.env
         )
@@ -488,7 +493,7 @@ class TerminalHub:
 
     def load_screenshot_frequency(self):
         try:
-            config_file = os.path.join(self.app_dir, ".config/screenshot_frequency.json")
+            config_file = get_frequency_config_file()
             if os.path.exists(config_file):
                 with open(config_file, 'r') as f:
                     self.current_frequency = float(json.load(f).get('frequency', 4.0))
@@ -497,24 +502,19 @@ class TerminalHub:
 
     def save_screenshot_frequency(self):
         try:
-            config_dir = os.path.join(self.app_dir, ".config")
-            os.makedirs(config_dir, exist_ok=True)
-            config_file = os.path.join(config_dir, "screenshot_frequency.json")
+            config_file = get_frequency_config_file()
             with open(config_file, "w") as f:
                 json.dump({'frequency': self.current_frequency}, f)
                 
             # Create reload signal file
-            tmp_dir = os.path.join(self.app_dir, ".tmp")
-            os.makedirs(tmp_dir, exist_ok=True)
-            with open(os.path.join(tmp_dir, "reload_frequency"), "w") as f:
+            with open(os.path.join(get_temp_dir(), "reload_frequency"), "w") as f:
                 pass  # Just create the file
                 
         except Exception as e:
             print(f"Error saving frequency: {e}")
 
     def toggle_screenshot_pause(self):
-        tmp_dir = os.path.join(self.app_dir, ".tmp")
-        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_dir = get_temp_dir()
         pause_file = os.path.join(tmp_dir, "signal_pause_capture")
         resume_file = os.path.join(tmp_dir, "signal_resume_capture")
         
@@ -615,7 +615,7 @@ class TerminalHub:
         try:
             width = stdscr.getmaxyx()[1]
             # Draw pause/resume status
-            pause_file = os.path.join(self.app_dir, ".tmp/signal_pause_capture")
+            pause_file = os.path.join(get_temp_dir(), "signal_pause_capture")
             status = "PAUSED" if os.path.exists(pause_file) else "RUNNING"
             status_color = curses.color_pair(STATUS_STOPPED if status == "PAUSED" else STATUS_RUNNING)
             stdscr.addstr(start_y, 2, f"Status: ", self.get_view_color("screenshot"))
