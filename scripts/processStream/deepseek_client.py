@@ -25,6 +25,35 @@ def extract_content_between_tags(text: str, start_tag: str, end_tag: str) -> Opt
     except:
         return None
 
+def format_code_block(code: str) -> str:
+    """Format a code block with consistent indentation."""
+    lines = code.split('\n')
+    # Find the minimum indentation level (excluding empty lines)
+    min_indent = float('inf')
+    for line in lines:
+        if line.strip():  # Only check non-empty lines
+            indent = len(line) - len(line.lstrip())
+            min_indent = min(min_indent, indent)
+    
+    if min_indent == float('inf'):
+        min_indent = 0
+        
+    # Remove the common indentation
+    formatted_lines = []
+    for line in lines:
+        if line.strip():  # Keep empty lines as is
+            formatted_lines.append(line[min_indent:] if len(line) >= min_indent else line)
+        else:
+            formatted_lines.append('')
+            
+    # Ensure code block starts and ends with empty lines for better readability
+    if formatted_lines and formatted_lines[0].strip():
+        formatted_lines.insert(0, '')
+    if formatted_lines and formatted_lines[-1].strip():
+        formatted_lines.append('')
+        
+    return '\n'.join(formatted_lines)
+
 def analyze_text(word_list: list) -> Dict[str, Union[str, None]]:
     """Submit text to DeepSeek for analysis and return extracted challenge and solution."""
     try:
@@ -41,9 +70,13 @@ def analyze_text(word_list: list) -> Dict[str, Union[str, None]]:
         )
 
         if response is not None:
-            # Extract challenge and solution
+            # Extract challenge and solution, format code blocks
             challenge = extract_content_between_tags(response, "<CHALLENGE>", "</CHALLENGE>")
             solution = extract_content_between_tags(response, "<SOLUTION>", "</SOLUTION>")
+            
+            # Format the solution code block if it exists
+            if solution:
+                solution = format_code_block(solution)
             
             return {
                 "status": "success",

@@ -21,21 +21,30 @@ from local_ocr import process_image
 from utils.path_config import get_screenshots_dir, get_logs_dir, get_scripts_dir
 from utils.socketio_utils import log_debug, log_to_socketio
 
-# Disable default Werkzeug logging
+# Completely disable Flask's default logging
+logging.getLogger('werkzeug').disabled = True
+log = logging.getLogger('werkzeug')
+log.disabled = True
+
+# Ensure Flask's built-in logging is also disabled
+class CustomFlask(Flask):
+    def log_exception(self, exc_info):
+        """Override to prevent Flask from logging exceptions to stderr"""
+        pass
+
+app = CustomFlask(__name__)
+app.logger.disabled = True
+
+# Disable Werkzeug's default request logging
 WSGIRequestHandler.log = lambda *args, **kwargs: None
 
 load_dotenv()
 
-app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app)
 
 # Global mute state
 MUTE_PROCESS_MESSAGES = False
 mute_lock = Lock()
-
-# Completely disable Flask's default logging
-logging.getLogger('werkzeug').disabled = True
-app.logger.disabled = True
 
 # Custom logging that respects muting
 def should_log_message():
@@ -61,22 +70,20 @@ class RequestLoggingMiddleware:
         path = environ.get('PATH_INFO', '')
         method = environ.get('REQUEST_METHOD', '')
         
-        # Skip logging for certain paths
+        # Skip logging for internal paths
         skip_logging = (
-            path == '/health' and method == 'GET'  # Skip frequent health checks
+            path == '/health' or  # Skip health checks
+            path == '/broadcast' or  # Skip SocketIO broadcasts
+            (path == '/upload' and not MUTE_PROCESS_MESSAGES)  # Only log uploads if not muted
         )
         
-        if not skip_logging and should_log_message():
-            if method == 'POST' and path == '/upload':
-                log_network_message(f"Screenshot upload received")
-            else:
-                log_network_message(f"{method} {path}")
+        if not skip_logging:
+            log_debug(f"Received {method} {path}", "Process", "info")
         
         def custom_start_response(status, headers, exc_info=None):
-            if not skip_logging and should_log_message():
+            if not skip_logging:
                 status_code = status.split()[0]
-                if method == 'POST' and path == '/upload':
-                    log_network_message(f"Upload complete: {status_code}")
+                log_debug(f"Response: {status_code}", "Process", "info")
             return start_response(status, headers, exc_info)
         
         return self._app(environ, custom_start_response)
@@ -146,31 +153,91 @@ def submit_to_deepseek(ocr_result):
         from deepseek_client import analyze_text
         
         log_debug("Sending text to DeepSeek for analysis...", "DeepSeek", "info")
+        log_to_socketio(
+            "Analyzing the extracted text to find a coding challenge...",
+            "Processing Status",
+            "progress"
+        )
+        
         result = analyze_text(ocr_result.get("lines", []))
         
         if result["status"] == "success":
-            # Send challenge text to socket if found
+            # Format and send challenge text if found
             if result["challenge"]:
-                log_debug("Challenge text extracted successfully", "DeepSeek", "info")
-                log_to_socketio(result["challenge"], "Challenge Detected", "info")
-            else:
-                log_debug("No challenge text found in extracted text", "DeepSeek", "warning")
+                log_debug("Challenge text extracted successfully", "DeepSeek", "Info")
+                challenge_message = (
+                    "📝 Challenge Description:\n\n"
+                    f"{result['challenge']}\n\n"
+                    "Generating solution..."
+                )
+                log_to_socketio(challenge_message, "Challenge", "Info")
 
-            # Send solution to socket if found
+            # Format and send solution if found
             if result["solution"]:
-                log_debug("Solution generated successfully", "DeepSeek", "info")
-                log_to_socketio(result["solution"], "Solution Generated", "prime")
+                log_debug("Solution generated successfully", "DeepSeek", "Info")
+                solution_message = (
+                    "Here's a solution to the challenge:\n\n"
+                    f"{result['solution']}\n\n"
+                    "This solution emphasizes:\n"
+                    "• Clean, maintainable code\n"
+                    "• Optimal time/space complexity\n"
+                    "• Language-specific best practices"
+                )
+                log_to_socketio(solution_message, "Solution", "Prime")
             else:
-                log_debug("No solution generated", "DeepSeek", "warning")
+                if result["challenge"]:
+                    log_to_socketio(
+                        "I found a coding challenge but couldn't generate a solution.\n"
+                        "This might be due to:\n"
+                        "• Complex or ambiguous requirements\n"
+                        "• Missing test cases or constraints\n"
+                        "• Incomplete challenge description\n\n"
+                        "Try capturing a clearer screenshot of the challenge.", 
+                        "Processing Status", 
+                        "Warning"
+                    )
+            
+            if not result["challenge"]:
+                log_to_socketio(
+                    "No coding challenge was found in this screenshot.\n\n"
+                    "Make sure:\n"
+                    "• The challenge text is clearly visible\n"
+                    "• The screenshot includes the full problem description\n"
+                    "• There isn't too much unrelated text\n\n"
+                    "Try taking another screenshot focusing on the challenge.",
+                    "Analysis Result",
+                    "Warning"
+                )
                 
             return True
         else:
             error_msg = result.get("error", "Unknown error in DeepSeek processing")
             log_debug(error_msg, "DeepSeek", "error")
+            log_to_socketio(
+                "Failed to process the screenshot with DeepSeek.\n\n"
+                "Possible issues:\n"
+                "• OCR text might be unclear\n"
+                "• Screenshot might be incomplete\n"
+                "• Connection problems with DeepSeek\n\n"
+                "Check the Process screen for detailed error information.",
+                "Processing Error", 
+                "error"
+            )
             return False
             
     except Exception as e:
-        log_debug(f"Error in DeepSeek processing: {str(e)}", "DeepSeek", "error")
+        error_msg = f"Error in DeepSeek processing: {str(e)}"
+        log_debug(error_msg, "DeepSeek", "error")
+        log_to_socketio(
+            "An unexpected error occurred.\n\n"
+            "This might be due to:\n"
+            "• Network connectivity issues\n"
+            "• Server resource constraints\n"
+            "• Internal processing errors\n\n"
+            "Please try again in a few moments.",
+            "System Error",
+            "error"
+        )
         return False
 
 def process_latest_screenshot():

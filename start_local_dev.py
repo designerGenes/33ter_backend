@@ -716,13 +716,21 @@ class TerminalHub:
                 }
             }
             
+            # Format message for Socket screen output
+            from utils.socketio_utils import format_socket_message
+            formatted_message = format_socket_message(title, message, log_type)
+            
+            # Add to socket output queue first
+            self.process_manager.output_queues["socket"].append(formatted_message)
+            
+            # Then send to SocketIO server
             response = requests.post(
                 f"http://localhost:{socket_port}/broadcast",
                 json=payload
             )
             
             if response.status_code == 200:
-                return f"Message sent successfully"
+                return None  # Don't add additional output
             else:
                 return f"Error sending message: {response.status_code}"
         except Exception as e:
