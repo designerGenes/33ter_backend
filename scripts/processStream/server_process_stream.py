@@ -7,6 +7,9 @@ import subprocess
 from dotenv import load_dotenv
 import socket
 import json
+import datetime
+from local_ocr import process_image
+from socketio_utils import log_to_socketio
 
 load_dotenv()
 
@@ -99,34 +102,29 @@ def process_latest_screenshot():
     )
     
     try:
-        # Run Azure OCR
-        azure_result = subprocess.run(
-            ["python", submit_azure_script, most_recent_file],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        # Process with local OCR
+        result = process_image(most_recent_file)
         
-        # Send Azure's OCR response to the chatroom
-        azure_output = azure_result.stdout.strip()
-        if azure_output:
-            try:
-                # Try to parse as JSON for better formatting
-                ocr_data = json.loads(azure_output)
-                formatted_output = json.dumps(ocr_data, indent=2)
-            except json.JSONDecodeError:
-                formatted_output = azure_output
-                
-            send_socket_message(
-                "Received coding challenge response:",  
-                formatted_output
-            )
+        # Save result to logs
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        if not os.path.exists('logs'):
+            os.makedirs('logs')
             
-        return "Screenshot processed by Azure OCR", 200
+        result_file = os.path.join('logs', f'{timestamp}_local_ocr_response.json')
+        with open(result_file, 'w') as f:
+            json.dump(result, f, indent=2)
+
+        if result["status"] == "success":
+            log_to_socketio("✓ OCR completed successfully", title="OCR", logType="success")
+            return "Screenshot processed by local OCR", 200
+        else:
+            error_msg = result.get("error", "Unknown error during OCR")
+            log_to_socketio(f"Error: {error_msg}", title="OCR", logType="error")
+            return error_msg, 500
         
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Error processing {filename}: {str(e)}\nOutput: {e.output}"
-        send_socket_message("Processing Error", error_msg)
+    except Exception as e:
+        error_msg = f"Error processing {filename}: {str(e)}"
+        log_to_socketio(f"Error: {error_msg}", title="OCR", logType="error")
         return error_msg, 500
 
 @app.route('/upload', methods=['POST'])
