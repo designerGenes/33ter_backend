@@ -500,8 +500,15 @@ class TerminalHub:
             config_dir = os.path.join(self.app_dir, ".config")
             os.makedirs(config_dir, exist_ok=True)
             config_file = os.path.join(config_dir, "screenshot_frequency.json")
-            with open(config_file, 'w') as f:
+            with open(config_file, "w") as f:
                 json.dump({'frequency': self.current_frequency}, f)
+                
+            # Create reload signal file
+            tmp_dir = os.path.join(self.app_dir, ".tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+            with open(os.path.join(tmp_dir, "reload_frequency"), "w") as f:
+                pass  # Just create the file
+                
         except Exception as e:
             print(f"Error saving frequency: {e}")
 
@@ -546,8 +553,12 @@ class TerminalHub:
             "screenshot": [
                 "Screenshot View Help",
                 "",
+                "This view manages the automatic screenshot capture service that monitors",
+                "your screen for coding challenges. Screenshots are automatically captured",
+                "at regular intervals and sent to the process server for OCR analysis.",
+                "",
                 "Space: Pause/Resume screenshot capture",
-                "Left/Right: Adjust frequency by 0.5s",
+                "Left/Right: Adjust frequency by 0.5s (saves automatically)",
                 "F: Enter new frequency value",
                 "O: Open screenshots folder",
                 "ESC: Close help",
@@ -853,10 +864,10 @@ class TerminalHub:
                             self.open_screenshots_folder()
                         elif key == curses.KEY_LEFT:
                             self.current_frequency = max(0.5, self.current_frequency - 0.5)
-                            self.save_screenshot_frequency()
+                            self.save_screenshot_frequency()  # Save immediately after change
                         elif key == curses.KEY_RIGHT:
                             self.current_frequency = min(10.0, self.current_frequency + 0.5)
-                            self.save_screenshot_frequency()
+                            self.save_screenshot_frequency()  # Save immediately after change
                         elif key == ord('f'):
                             new_freq = self.get_frequency_input(stdscr)
                             if new_freq is not None:

@@ -25,6 +25,7 @@ prev_pause_state = False  # Track previous pause state
 screenshot_frequency = 4.0  # Default frequency in seconds
 frequency_config_file = "./.config/screenshot_frequency.json"
 last_screenshot_time = 0
+last_frequency_check = 0  # Add timestamp for frequency checks
 
 def ensure_config_dir():
     os.makedirs(os.path.dirname(frequency_config_file), exist_ok=True)
@@ -34,18 +35,32 @@ def load_frequency():
     try:
         if os.path.exists(frequency_config_file):
             with open(frequency_config_file, 'r') as f:
-                screenshot_frequency = float(json.load(f).get('frequency', 4.0))
-                logging.info(f"Loaded screenshot frequency: {screenshot_frequency}s")
+                data = json.load(f)
+                new_frequency = float(data.get('frequency', 4.0))
+                if new_frequency != screenshot_frequency:
+                    screenshot_frequency = new_frequency
+                    logging.info(f"Updated screenshot frequency: {screenshot_frequency}s")
     except Exception as e:
         logging.error(f"Error loading frequency: {e}")
         screenshot_frequency = 4.0
 
 def check_reload_frequency():
-    reload_file = "./.tmp/reload_frequency"
-    if os.path.exists(reload_file):
-        os.remove(reload_file)
+    global last_frequency_check
+    current_time = time.time()
+    
+    # Check frequency file every 0.5 seconds
+    if current_time - last_frequency_check >= 0.5:
+        last_frequency_check = current_time
+        reload_file = "./.tmp/reload_frequency"
+        
+        # Regular file check
+        if os.path.exists(reload_file):
+            os.remove(reload_file)
+            load_frequency()
+            return True
+            
+        # Also check frequency file directly for changes
         load_frequency()
-        return True
     return False
 
 def signal_handler(sig, frame):
