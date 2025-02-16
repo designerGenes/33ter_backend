@@ -113,6 +113,8 @@ async def disconnect(sid):
             logger.info(f"Client {sid} left room {room}")
         del connected_clients[sid]
 
+VALID_LOG_TYPES = ["Info", "Warning", "Prime"]
+
 @sio.event
 async def room_message(sid, data):
     """Handle message sent to a room."""
@@ -121,7 +123,12 @@ async def room_message(sid, data):
     if room and message_data:
         title = message_data.get("title")
         message = message_data.get("message")
-        log_type = message_data.get("logType", "info")
+        log_type = message_data.get("logType", "Info")
+        
+        # Validate log type
+        if log_type not in VALID_LOG_TYPES:
+            log_type = "Info"
+            
         logger.info(f"Message sent to room {room}")
         await sio.emit("room_message", {
             "data": {
@@ -143,7 +150,11 @@ async def broadcast_handler(request):
         if message_data:
             title = message_data.get("title")
             message = message_data.get("message")
-            log_type = message_data.get("logType", "info")
+            log_type = message_data.get("logType", "Info")
+            
+            # Validate log type
+            if log_type not in VALID_LOG_TYPES:
+                log_type = "Info"
             
             if message:
                 logger.info(f"Broadcasting to room {room}")

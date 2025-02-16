@@ -24,7 +24,7 @@ def find_tesseract_executable() -> Optional[str]:
 
 # Set Tesseract executable path
 tesseract_path = find_tesseract_executable()
-if tesseract_path:
+if (tesseract_path):
     pytesseract.pytesseract.tesseract_cmd = tesseract_path
 else:
     raise RuntimeError("Tesseract executable not found. Please ensure Tesseract is installed.")
@@ -170,11 +170,14 @@ def process_image(image_path: str, max_retries: int = 3) -> Dict:
             if image is None:
                 if attempt < max_retries - 1:
                     log_debug(f"Failed to read image (attempt {attempt + 1}/{max_retries}), retrying...", "OCR", "warning")
-                    time.sleep(0.5)  # Short delay before retry
+                    time.sleep(0.5)
                     continue
                 error_msg = f"Could not read image after {max_retries} attempts: {image_path}"
                 log_debug(error_msg, "OCR", "error")
                 return {"status": "error", "error": error_msg}
+
+            # Get image dimensions
+            height, width = image.shape[:2]
 
             # Verify image data
             if image.size == 0 or len(image.shape) < 2:
@@ -191,35 +194,51 @@ def process_image(image_path: str, max_retries: int = 3) -> Dict:
             processed_images = preprocess_for_ocr(image)
             
             all_text = []
-            # Try OCR on each processed version
+            all_boxes = []
+            
             log_debug("Running OCR on processed images...", "OCR", "info")
             for i, img in enumerate(processed_images, 1):
                 try:
-                    text = pytesseract.image_to_string(img)
-                    if text.strip():
-                        # Split into lines and filter out empty ones
-                        lines = [line.strip() for line in text.split('\n') if line.strip()]
-                        all_text.extend(lines)
-                        log_debug(f"OCR pass {i}/{len(processed_images)} successful", "OCR", "info")
+                    # Get both text and bounding boxes
+                    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+                    for j in range(len(data['text'])):
+                        if int(data['conf'][j]) > 0:  # Filter out low confidence results
+                            text = data['text'][j].strip()
+                            if text:
+                                x = int(data['left'][j])
+                                y = int(data['top'][j])
+                                w = int(data['width'][j])
+                                h = int(data['height'][j])
+                                all_text.append(text)
+                                all_boxes.append([x, y, x + w, y + h])
+                                
+                    log_debug(f"OCR pass {i}/{len(processed_images)} successful", "OCR", "info")
                 except Exception as e:
                     log_debug(f"OCR error on image {i}/{len(processed_images)}: {str(e)}", "OCR", "warning")
                     continue
 
-            # Remove duplicates while preserving order
-            unique_lines = merge_text_results(all_text)
+            # Combine text and boxes, removing duplicates
+            text_with_boxes = []
+            seen = set()
+            for text, box in zip(all_text, all_boxes):
+                if text not in seen:
+                    text_with_boxes.append({
+                        "text": text,
+                        "bbox": box
+                    })
+                    seen.add(text)
             
-            if not unique_lines:
+            if not text_with_boxes:
                 log_debug("No text detected in image", "OCR", "warning")
                 return {"status": "error", "error": "No text detected"}
 
-            log_debug(f"Successfully extracted {len(unique_lines)} lines of text", "OCR", "info")
-            
-            # Print formatted text output
-            print_extracted_text(unique_lines)
-            
+            log_debug(f"Successfully extracted {len(text_with_boxes)} lines of text", "OCR", "info")
+
             return {
                 "status": "success",
-                "lines": unique_lines
+                "lines": text_with_boxes,
+                "image_width": width,
+                "image_height": height
             }
 
         except cv2.error as e:

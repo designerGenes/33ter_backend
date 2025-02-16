@@ -267,8 +267,61 @@ def process_latest_screenshot():
                 f.flush()
                 os.fsync(f.fileno())
 
+            # Display extracted text with relative positioning
+            log_debug("\nText extracted:", "Process", "info")
+            
+            # Get image dimensions from OCR result
+            img_width = result.get("image_width", 0)
+            img_height = result.get("image_height", 0)
+            
+            if img_width and img_height:
+                # Create a relative spatial representation
+                lines = result.get("lines", [])
+                
+                # Sort lines by vertical position
+                sorted_lines = sorted(lines, key=lambda x: x.get("bbox", [0,0,0,0])[1])
+                
+                # Group lines by vertical position (within 20px threshold)
+                vertical_groups = []
+                current_group = []
+                last_y = -float('inf')
+                
+                for line in sorted_lines:
+                    bbox = line.get("bbox", [0,0,0,0])
+                    x, y = bbox[0], bbox[1]
+                    
+                    # Start new group if y-coordinate differs significantly
+                    if abs(y - last_y) > 20:
+                        if current_group:
+                            vertical_groups.append(sorted(current_group, key=lambda x: x[0]))
+                        current_group = []
+                        last_y = y
+                    
+                    # Calculate relative x position (0-100)
+                    rel_x = min(100, max(0, int((x / img_width) * 100)))
+                    current_group.append((rel_x, line.get("text", "")))
+                
+                if current_group:
+                    vertical_groups.append(sorted(current_group, key=lambda x: x[0]))
+                
+                # Display text with proportional spacing
+                for group in vertical_groups:
+                    line = ""
+                    last_x = 0
+                    for rel_x, text in group:
+                        # Add proportional spacing
+                        spaces = max(1, min(15, int((rel_x - last_x) / 7)))
+                        line += " " * spaces + text
+                        last_x = rel_x
+                    log_debug(line.lstrip(), "Process", "info")
+                    
+            else:
+                # Fallback to simple list if dimensions aren't available
+                for line in result.get("lines", []):
+                    log_debug(line.get("text", ""), "Process", "info")
+
             # Start DeepSeek processing
-            log_debug("Starting DeepSeek analysis...", "Process", "info")
+            log_debug("\nSending to DeepSeek... away we go!", "Process", "info")
             success = submit_to_deepseek(result)
             
             if success:
