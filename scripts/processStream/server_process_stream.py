@@ -133,63 +133,44 @@ def cleanup_old_files():
 def submit_to_deepseek(ocr_result):
     """Submit OCR results to DeepSeek for processing."""
     try:
-        # Save OCR results to a temporary file
+        # Save OCR results to a temporary file for logging
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         temp_file = os.path.join(LOGS_DIR, f'{timestamp}_ocr_result.json')
         
         with open(temp_file, 'w') as f:
             json.dump(ocr_result, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        # Use dedicated DeepSeek client
+        from deepseek_client import analyze_text
         
-        # Verify the DeepSeek script exists
-        if not os.path.isfile(submit_deepseek_script):
-            log_debug("DeepSeek script not found", "Process", "error")
+        log_debug("Sending text to DeepSeek for analysis...", "DeepSeek", "info")
+        result = analyze_text(ocr_result.get("lines", []))
+        
+        if result["status"] == "success":
+            # Send challenge text to socket if found
+            if result["challenge"]:
+                log_debug("Challenge text extracted successfully", "DeepSeek", "info")
+                log_to_socketio(result["challenge"], "Challenge Detected", "info")
+            else:
+                log_debug("No challenge text found in extracted text", "DeepSeek", "warning")
+
+            # Send solution to socket if found
+            if result["solution"]:
+                log_debug("Solution generated successfully", "DeepSeek", "info")
+                log_to_socketio(result["solution"], "Solution Generated", "prime")
+            else:
+                log_debug("No solution generated", "DeepSeek", "warning")
+                
+            return True
+        else:
+            error_msg = result.get("error", "Unknown error in DeepSeek processing")
+            log_debug(error_msg, "DeepSeek", "error")
             return False
-        
-        def process_deepseek_output():
-            try:
-                process = subprocess.Popen(
-                    [sys.executable, submit_deepseek_script, temp_file],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=os.path.dirname(submit_deepseek_script),
-                    universal_newlines=True
-                )
-                
-                import select
-                readable = select.select([process.stdout, process.stderr], [], [], 30)[0]
-                
-                if not readable:
-                    process.kill()
-                    log_debug("DeepSeek processing timed out", "Process", "error")
-                    return False
-                
-                stdout, stderr = process.communicate()
-                
-                if stderr:
-                    log_debug(f"DeepSeek Error: {stderr}", "Process", "error")
-                    return False
-                
-                if stdout:
-                    try:
-                        result = json.loads(stdout)
-                        # Don't log any results, just process them
-                        return True if result.get("status") == "success" else False
-                    except json.JSONDecodeError:
-                        log_debug("Invalid DeepSeek output format", "Process", "error")
-                        return False
-                
-                return True
-                
-            except Exception as e:
-                log_debug(f"Error in DeepSeek processing: {str(e)}", "Process", "error")
-                return False
-        
-        # Process DeepSeek in a separate thread
-        Thread(target=process_deepseek_output, daemon=True).start()
-        return True
-        
+            
     except Exception as e:
-        log_debug(f"Error preparing DeepSeek submission: {str(e)}", "Process", "error")
+        log_debug(f"Error in DeepSeek processing: {str(e)}", "DeepSeek", "error")
         return False
 
 def process_latest_screenshot():
@@ -219,9 +200,15 @@ def process_latest_screenshot():
                 f.flush()
                 os.fsync(f.fileno())
 
-            # Start DeepSeek processing in background
-            log_debug("Submitting to DeepSeek...", "Process", "info")
-            Thread(target=lambda: submit_to_deepseek(result), daemon=True).start()
+            # Start DeepSeek processing
+            log_debug("Starting DeepSeek analysis...", "Process", "info")
+            success = submit_to_deepseek(result)
+            
+            if success:
+                log_debug("Processing workflow completed successfully", "Process", "info")
+            else:
+                log_debug("Processing completed with some errors", "Process", "warning")
+                
             return "Processing complete", 200
         else:
             error_msg = result.get("error", "Unknown error during OCR")
@@ -259,12 +246,10 @@ def upload():
 def trigger():
     """Handle manual trigger to process the most recent file."""
     def process_async():
-        log_debug("Manual trigger received - processing latest screenshot", "Process", "info")
+        log_debug("Manual trigger received - starting processing workflow", "Process", "info")
         result, status_code = process_latest_screenshot()
         if status_code != 200:
-            log_debug(f"Processing failed: {result}", "Process", "error")
-        else:
-            log_debug("Processing triggered successfully", "Process", "info")
+            log_debug(f"Processing workflow failed: {result}", "Process", "error")
     
     # Start processing in background thread
     Thread(target=process_async, daemon=True).start()

@@ -120,6 +120,41 @@ def merge_text_results(texts: List[str]) -> List[str]:
     # Sort by length to prioritize longer text segments which are more likely to be meaningful
     return sorted(merged, key=len, reverse=True)
 
+def print_extracted_text(lines: List[str]):
+    """Print extracted text in a formatted, themed way."""
+    print("\n" + "="*50)
+    print("          EXTRACTED TEXT OUTPUT")
+    print("="*50 + "\n")
+    
+    if not lines:
+        print("No text was extracted from the image.")
+        return
+    
+    # Group lines by probable sections (e.g. longer lines might be paragraph text)
+    current_section = []
+    sections = []
+    
+    for line in lines:
+        if len(line.strip()) < 3:  # Empty or very short lines mark section boundaries
+            if current_section:
+                sections.append(current_section)
+                current_section = []
+            continue
+        current_section.append(line)
+    
+    if current_section:  # Add last section if exists
+        sections.append(current_section)
+    
+    # Print sections with separation
+    for i, section in enumerate(sections):
+        if i > 0:
+            print("\n" + "-"*30 + "\n")  # Section separator
+        
+        for line in section:
+            print(f"  {line}")
+    
+    print("\n" + "="*50 + "\n")
+
 def process_image(image_path: str, max_retries: int = 3) -> Dict:
     """Process an image using OpenCV and Tesseract OCR with retry logic"""
     for attempt in range(max_retries):
@@ -129,6 +164,7 @@ def process_image(image_path: str, max_retries: int = 3) -> Dict:
                 log_debug(error_msg, "OCR", "error")
                 return {"status": "error", "error": error_msg}
             
+            log_debug("Reading image file...", "OCR", "info")
             # Read image with error handling
             image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
             if image is None:
@@ -150,20 +186,23 @@ def process_image(image_path: str, max_retries: int = 3) -> Dict:
                 log_debug(error_msg, "OCR", "error")
                 return {"status": "error", "error": error_msg}
 
+            log_debug("Preprocessing image for OCR...", "OCR", "info")
             # Get preprocessed versions
             processed_images = preprocess_for_ocr(image)
             
             all_text = []
             # Try OCR on each processed version
-            for img in processed_images:
+            log_debug("Running OCR on processed images...", "OCR", "info")
+            for i, img in enumerate(processed_images, 1):
                 try:
                     text = pytesseract.image_to_string(img)
                     if text.strip():
                         # Split into lines and filter out empty ones
                         lines = [line.strip() for line in text.split('\n') if line.strip()]
                         all_text.extend(lines)
+                        log_debug(f"OCR pass {i}/{len(processed_images)} successful", "OCR", "info")
                 except Exception as e:
-                    log_debug(f"OCR error on processed image: {str(e)}", "OCR", "warning")
+                    log_debug(f"OCR error on image {i}/{len(processed_images)}: {str(e)}", "OCR", "warning")
                     continue
 
             # Remove duplicates while preserving order
@@ -175,11 +214,8 @@ def process_image(image_path: str, max_retries: int = 3) -> Dict:
 
             log_debug(f"Successfully extracted {len(unique_lines)} lines of text", "OCR", "info")
             
-            # Print extracted text to Process screen
-            print("\n=== Extracted Text ===")
-            for line in unique_lines:
-                print(line)
-            print("====================\n")
+            # Print formatted text output
+            print_extracted_text(unique_lines)
             
             return {
                 "status": "success",
