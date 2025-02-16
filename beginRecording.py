@@ -122,14 +122,18 @@ while running:
             # Capture the screenshot
             screenshot = pyautogui.screenshot()
             file_name = f"{int(current_time)}_capture.png"
+            file_path = os.path.join(SCREENSHOTS_DIR, file_name)
+            
+            # Save screenshot to local file with proper flushing
+            screenshot.save(file_path)
+            # Force flush to disk
+            with open(file_path, 'rb') as f:
+                os.fsync(f.fileno())
             
             # Save screenshot to buffer for upload
             buffer = BytesIO()
             screenshot.save(buffer, format="PNG")
             buffer.seek(0)
-
-            # Optionally save locally in the configured screenshots directory
-            screenshot.save(os.path.join(SCREENSHOTS_DIR, file_name))
             
             # Send to server
             response = requests.post(API_URL, files={"file": (file_name, buffer)})

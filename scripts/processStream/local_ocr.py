@@ -5,6 +5,9 @@ from PIL import Image
 import re
 import os
 from typing import List, Dict, Any, Optional
+import json
+import time
+from utils.socketio_utils import log_debug
 
 def find_tesseract_executable() -> Optional[str]:
     """Find the Tesseract executable in common installation paths."""
@@ -49,32 +52,43 @@ def clean_text(text: str) -> str:
     
     return ' '.join(cleaned_words)
 
+def ensure_file_readable(file_path: str, max_retries: int = 3, retry_delay: float = 0.5) -> bool:
+    """Ensure the file exists and is readable."""
+    for attempt in range(max_retries):
+        if not os.path.exists(file_path):
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return False
+            
+        try:
+            # Try to get file size
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                return False
+                
+            # Try to open file
+            with open(file_path, 'rb') as f:
+                # Read first few bytes to check if file is accessible
+                f.read(1024)
+            return True
+        except (IOError, OSError):
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return False
+    return False
+
 def preprocess_for_ocr(image: np.ndarray) -> List[np.ndarray]:
-    """
-    Process image in multiple ways to improve text detection for different scenarios.
-    Returns a list of processed images to try OCR on.
-    """
+    """Preprocess image using various techniques to improve OCR accuracy"""
     processed_images = []
-    height, width = image.shape[:2]
     
-    # Original grayscale
+    # Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     processed_images.append(gray)
-    
-    # Inverted for light text on dark background
-    inverted = cv2.bitwise_not(gray)
-    processed_images.append(inverted)
-    
-    # Enhanced contrast using CLAHE
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(gray)
-    processed_images.append(enhanced)
-    
-    # Adaptive thresholding for better text separation
-    binary_adaptive = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-    )
-    processed_images.append(binary_adaptive)
     
     # Otsu's thresholding for clean black text on white
     _, binary_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -106,61 +120,83 @@ def merge_text_results(texts: List[str]) -> List[str]:
     # Sort by length to prioritize longer text segments which are more likely to be meaningful
     return sorted(merged, key=len, reverse=True)
 
-def process_image(image_path: str) -> Dict[str, Any]:
-    """Process an image and return extracted text in a structured format."""
-    try:
-        # Read image using OpenCV
-        image = cv2.imread(image_path)
-        if image is None:
-            return {"status": "error", "error": f"Could not read image at {image_path}"}
-
-        # Scale image if it's too large
-        max_dimension = 1920
-        height, width = image.shape[:2]
-        if max(height, width) > max_dimension:
-            scale = max_dimension / max(height, width)
-            image = cv2.resize(image, None, fx=scale, fy=scale)
-
-        # Get multiple processed versions of the image
-        processed_images = preprocess_for_ocr(image)
-        
-        # Extract text from each processed image
-        all_texts = []
-        for processed in processed_images:
-            # Convert OpenCV image to PIL
-            pil_image = Image.fromarray(processed)
+def process_image(image_path: str, max_retries: int = 3) -> Dict:
+    """Process an image using OpenCV and Tesseract OCR with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            if not ensure_file_readable(image_path):
+                error_msg = f"File not readable after {max_retries} attempts: {image_path}"
+                log_debug(error_msg, "OCR", "error")
+                return {"status": "error", "error": error_msg}
             
-            # Try different PSM modes
-            psm_modes = [6, 3, 4]  # Single block, Auto, Single column
-            for psm in psm_modes:
-                custom_config = f'--oem 3 --psm {psm}'
-                
-                # Get text from image
-                text = pytesseract.image_to_string(
-                    pil_image,
-                    config=custom_config,
-                    lang='eng'
-                )
-                if text.strip():
-                    all_texts.append(text)
-        
-        # Merge results and remove duplicates
-        merged_lines = merge_text_results(all_texts)
-        
-        if merged_lines:
+            # Read image with error handling
+            image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+            if image is None:
+                if attempt < max_retries - 1:
+                    log_debug(f"Failed to read image (attempt {attempt + 1}/{max_retries}), retrying...", "OCR", "warning")
+                    time.sleep(0.5)  # Short delay before retry
+                    continue
+                error_msg = f"Could not read image after {max_retries} attempts: {image_path}"
+                log_debug(error_msg, "OCR", "error")
+                return {"status": "error", "error": error_msg}
+
+            # Verify image data
+            if image.size == 0 or len(image.shape) < 2:
+                if attempt < max_retries - 1:
+                    log_debug(f"Invalid image data (attempt {attempt + 1}/{max_retries}), retrying...", "OCR", "warning")
+                    time.sleep(0.5)
+                    continue
+                error_msg = "Invalid image data"
+                log_debug(error_msg, "OCR", "error")
+                return {"status": "error", "error": error_msg}
+
+            # Get preprocessed versions
+            processed_images = preprocess_for_ocr(image)
+            
+            all_text = []
+            # Try OCR on each processed version
+            for img in processed_images:
+                try:
+                    text = pytesseract.image_to_string(img)
+                    if text.strip():
+                        # Split into lines and filter out empty ones
+                        lines = [line.strip() for line in text.split('\n') if line.strip()]
+                        all_text.extend(lines)
+                except Exception as e:
+                    log_debug(f"OCR error on processed image: {str(e)}", "OCR", "warning")
+                    continue
+
+            # Remove duplicates while preserving order
+            unique_lines = merge_text_results(all_text)
+            
+            if not unique_lines:
+                log_debug("No text detected in image", "OCR", "warning")
+                return {"status": "error", "error": "No text detected"}
+
+            log_debug(f"Successfully extracted {len(unique_lines)} lines of text", "OCR", "info")
+            
+            # Print extracted text to Process screen
+            print("\n=== Extracted Text ===")
+            for line in unique_lines:
+                print(line)
+            print("====================\n")
+            
             return {
-                "lines": merged_lines,
-                "status": "success"
+                "status": "success",
+                "lines": unique_lines
             }
-        else:
-            return {
-                "status": "error",
-                "error": "No text could be extracted from the image"
-            }
-        
-    except Exception as e:
-        return {
-            "lines": [],
-            "status": "error",
-            "error": str(e)
-        }
+
+        except cv2.error as e:
+            if "libpng error" in str(e) and attempt < max_retries - 1:
+                log_debug(f"PNG read error (attempt {attempt + 1}/{max_retries}), retrying...", "OCR", "warning")
+                time.sleep(0.5)
+                continue
+            error_msg = f"OpenCV error: {str(e)}"
+            log_debug(error_msg, "OCR", "error")
+            return {"status": "error", "error": error_msg}
+        except Exception as e:
+            error_msg = f"Error processing image: {str(e)}"
+            log_debug(error_msg, "OCR", "error")
+            return {"status": "error", "error": error_msg}
+            
+    return {"status": "error", "error": "Maximum retries exceeded"}

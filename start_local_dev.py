@@ -694,12 +694,12 @@ class TerminalHub:
         try:
             process_url = f"http://localhost:{self.config['services']['processStream']['port']}/trigger"
             response = requests.post(process_url)
-            if response.status_code == 200:
+            if response.status_code == 204:
                 return "Processing triggered successfully"
             else:
-                return f"Error triggering process: {response.json().get('message', 'Unknown error')}"
+                return f"Error triggering process: {response.status_code}"
         except Exception as e:
-            return f"Error triggering process: {str(e)}"
+            return f"Error connecting to process server: {str(e)}"
 
     def post_message_to_socket(self, message, title="Nice shot", log_type="info"):
         """Post a message to the Socket.IO server."""

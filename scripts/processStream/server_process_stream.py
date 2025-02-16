@@ -19,6 +19,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import WSGIRequestHandler
 from local_ocr import process_image
 from utils.path_config import get_screenshots_dir, get_logs_dir, get_scripts_dir
+from utils.socketio_utils import log_debug, log_to_socketio
 
 # Disable default Werkzeug logging
 WSGIRequestHandler.log = lambda *args, **kwargs: None
@@ -125,7 +126,8 @@ def cleanup_old_files():
                 file_age = current_time - os.path.getmtime(file_path)
                 if file_age > 300:  # 5 minutes = 300 seconds
                     os.remove(file_path)
-                    print(f"Deleted old file: {file_name}")
+                    if not MUTE_PROCESS_MESSAGES:
+                        log_debug(f"Deleted old file: {file_name}")
         time.sleep(60)  # Run every minute
 
 def submit_to_deepseek(ocr_result):
@@ -140,7 +142,7 @@ def submit_to_deepseek(ocr_result):
         
         # Verify the DeepSeek script exists
         if not os.path.isfile(submit_deepseek_script):
-            print("[Error] DeepSeek script not found")
+            log_debug("DeepSeek script not found", "Process", "error")
             return False
         
         def process_deepseek_output():
@@ -158,13 +160,13 @@ def submit_to_deepseek(ocr_result):
                 
                 if not readable:
                     process.kill()
-                    print("[Error] DeepSeek processing timed out")
+                    log_debug("DeepSeek processing timed out", "Process", "error")
                     return False
                 
                 stdout, stderr = process.communicate()
                 
                 if stderr:
-                    print(f"[Error] {stderr}")
+                    log_debug(f"DeepSeek Error: {stderr}", "Process", "error")
                     return False
                 
                 if stdout:
@@ -173,13 +175,13 @@ def submit_to_deepseek(ocr_result):
                         # Don't log any results, just process them
                         return True if result.get("status") == "success" else False
                     except json.JSONDecodeError:
-                        print("[Error] Invalid DeepSeek output format")
+                        log_debug("Invalid DeepSeek output format", "Process", "error")
                         return False
                 
                 return True
                 
             except Exception as e:
-                print(f"[Error] DeepSeek processing error: {str(e)}")
+                log_debug(f"Error in DeepSeek processing: {str(e)}", "Process", "error")
                 return False
         
         # Process DeepSeek in a separate thread
@@ -187,48 +189,48 @@ def submit_to_deepseek(ocr_result):
         return True
         
     except Exception as e:
-        print(f"[Error] Error preparing DeepSeek submission: {str(e)}")
+        log_debug(f"Error preparing DeepSeek submission: {str(e)}", "Process", "error")
         return False
 
 def process_latest_screenshot():
     """Process the most recent screenshot file."""
     try:
-        files = [os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) if os.path.isfile(os.path.join(UPLOAD_DIR, f))]
+        files = [os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR) 
+                if os.path.isfile(os.path.join(UPLOAD_DIR, f))]
         if not files:
             return "No screenshot found", 404
-        
+            
         most_recent_file = max(files, key=os.path.getmtime)
         filename = os.path.basename(most_recent_file)
         
+        # Add small delay to ensure file write is complete
+        time.sleep(0.1)
+        
         # Process with local OCR
+        log_debug("Starting OCR processing...", "Process", "info")
         result = process_image(most_recent_file)
         
-        # Save result to logs using absolute path
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        result_file = os.path.join(LOGS_DIR, f'{timestamp}_local_ocr_response.json')
-        with open(result_file, 'w') as f:
-            json.dump(result, f, indent=2)
-
         if result["status"] == "success":
-            # Log OCR results locally only
-            if "lines" in result and result["lines"]:
-                print("=== OCR Results ===")
-                for line in result["lines"]:
-                    print(line)
-            else:
-                print("[Warning] No text found in image")
-            
+            # Save OCR result to logs
+            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            result_file = os.path.join(LOGS_DIR, f'{timestamp}_local_ocr_response.json')
+            with open(result_file, 'w') as f:
+                json.dump(result, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+
             # Start DeepSeek processing in background
+            log_debug("Submitting to DeepSeek...", "Process", "info")
             Thread(target=lambda: submit_to_deepseek(result), daemon=True).start()
             return "Processing complete", 200
         else:
             error_msg = result.get("error", "Unknown error during OCR")
-            print(f"[Error] {error_msg}")
+            log_debug(error_msg, "Process", "error")
             return error_msg, 500
-        
+            
     except Exception as e:
         error_msg = f"Error processing {filename if 'filename' in locals() else 'unknown file'}: {str(e)}"
-        print(f"[Error] {error_msg}")
+        log_debug(error_msg, "Process", "error")
         return error_msg, 500
 
 @app.route('/upload', methods=['POST'])
@@ -239,17 +241,30 @@ def upload():
         return "No file provided", 400
 
     file_path = os.path.join(UPLOAD_DIR, file.filename)
-    file.save(file_path)
-    log_network_message(f"File saved: {file.filename}")
-    return "File received", 200
+    
+    # Save file with explicit flush and sync
+    try:
+        file.save(file_path)
+        # Force sync to filesystem
+        with open(file_path, 'rb') as f:
+            os.fsync(f.fileno())
+        if not MUTE_PROCESS_MESSAGES:
+            log_debug(f"Saved screenshot: {file.filename}", "Process", "info")
+        return "File received", 200
+    except Exception as e:
+        log_debug(f"Error saving file: {str(e)}", "Process", "error")
+        return str(e), 500
 
 @app.route('/trigger', methods=['POST'])
 def trigger():
     """Handle manual trigger to process the most recent file."""
     def process_async():
+        log_debug("Manual trigger received - processing latest screenshot", "Process", "info")
         result, status_code = process_latest_screenshot()
         if status_code != 200:
-            print(f"[Error] {result}")
+            log_debug(f"Processing failed: {result}", "Process", "error")
+        else:
+            log_debug("Processing triggered successfully", "Process", "info")
     
     # Start processing in background thread
     Thread(target=process_async, daemon=True).start()
@@ -259,9 +274,12 @@ def trigger():
 def signal():
     """Handle signal to process the most recent file immediately."""
     def process_async():
+        log_debug("Signal received - processing latest screenshot", "Process", "info")
         result, status_code = process_latest_screenshot()
         if status_code != 200:
-            print(f"[Error] {result}")
+            log_debug(f"Processing failed: {result}", "Process", "error")
+        else:
+            log_debug("Processing completed successfully", "Process", "info")
     
     # Start processing in background
     Thread(target=process_async, daemon=True).start()
@@ -276,7 +294,7 @@ def toggle_mute():
         MUTE_PROCESS_MESSAGES = not MUTE_PROCESS_MESSAGES
         status = "muted" if MUTE_PROCESS_MESSAGES else "unmuted"
         if not MUTE_PROCESS_MESSAGES:
-            print(f"[Process] Process messages {status}")
+            log_debug(f"Process messages {status}", "Process", "info")
         return jsonify({"status": status}), 200
 
 @app.route('/health', methods=['GET'])
