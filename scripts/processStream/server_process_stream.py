@@ -1,75 +1,50 @@
 import os
 import sys
-
-# Add parent directory to Python path to find utils package
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import time
-import re
-from flask import Flask, request, jsonify, json
-import requests
-from threading import Thread, Lock
-import subprocess
+from flask import Flask, request, jsonify
+from threading import Lock
 from dotenv import load_dotenv
-import socket
-import json
 import datetime
 import logging
 import asyncio
-# import JSONEncoder from Flask
-
-# from flask.json.provider import JSONProvider, JSONEncoder
 from asgiref.wsgi import WsgiToAsgi
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import WSGIRequestHandler
-from local_ocr import process_image
+from local_ocr import process_image_async
 from utils.path_config import get_screenshots_dir, get_logs_dir, get_scripts_dir
 from utils.socketio_utils import log_debug, log_to_socketio
 
-# Completely disable Flask's default logging
-logging.getLogger('werkzeug').disabled = True
-log = logging.getLogger('werkzeug')
-log.disabled = True
-
-# Ensure Flask's built-in logging is also disabled
 class CustomFlask(Flask):
     def log_exception(self, exc_info):
-        """Override to prevent Flask from logging exceptions to stderr"""
         pass
 
 app = CustomFlask(__name__)
 app.logger.disabled = True
 asgi_app = WsgiToAsgi(app)
 
-# Disable Werkzeug's default request logging
 WSGIRequestHandler.log = lambda *args, **kwargs: None
 
 load_dotenv()
 
 app.wsgi_app = ProxyFix(app.wsgi_app)
 
-# Global mute state
 MUTE_PROCESS_MESSAGES = False
 mute_lock = Lock()
 
-# Custom logging that respects muting
 def should_log_message():
-    """Check if we should log a message based on mute state."""
     global MUTE_PROCESS_MESSAGES
     with mute_lock:
         return not MUTE_PROCESS_MESSAGES
 
 def log_network_message(message):
-    """Log network-related messages respecting mute state."""
     if should_log_message() and isinstance(message, str):
-        # Strip ANSI color codes and extra whitespace
-        message = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', message).strip()
-        if message:  # Only log non-empty messages
+        message = message.strip()
+        if message:
             print(f"[Process] {message}")
 
-# Custom request logging middleware
 class RequestLoggingMiddleware:
     def __init__(self, app):
         self._app = app
@@ -78,11 +53,10 @@ class RequestLoggingMiddleware:
         path = environ.get('PATH_INFO', '')
         method = environ.get('REQUEST_METHOD', '')
         
-        # Skip logging for internal paths
         skip_logging = (
-            path == '/health' or  # Skip health checks
-            path == '/broadcast' or  # Skip SocketIO broadcasts
-            (path == '/upload' and not MUTE_PROCESS_MESSAGES)  # Only log uploads if not muted
+            path == '/health' or
+            path == '/broadcast' or
+            (path == '/upload' and not MUTE_PROCESS_MESSAGES)
         )
         
         if not skip_logging:
@@ -96,7 +70,6 @@ class RequestLoggingMiddleware:
         
         return self._app(environ, custom_start_response)
 
-# Add custom logging middleware
 app.wsgi_app = RequestLoggingMiddleware(app.wsgi_app)
 
 # Adjust paths based on run mode
@@ -131,7 +104,7 @@ def get_server_port():
     """Get the server port."""
     return 5347  # Fixed port for process stream server
 
-def cleanup_old_files():
+async def cleanup_old_files():
     """Delete files older than 5 minutes in the upload directory."""
     while True:
         current_time = time.time()
@@ -140,10 +113,13 @@ def cleanup_old_files():
             if os.path.isfile(file_path):
                 file_age = current_time - os.path.getmtime(file_path)
                 if file_age > 300:  # 5 minutes = 300 seconds
-                    os.remove(file_path)
-                    if not MUTE_PROCESS_MESSAGES:
-                        log_debug(f"Deleted old file: {file_name}")
-        time.sleep(60)  # Run every minute
+                    try:
+                        os.remove(file_path)
+                        if not MUTE_PROCESS_MESSAGES:
+                            log_debug(f"Deleted old file: {file_name}")
+                    except Exception as e:
+                        log_debug(f"Error deleting file {file_name}: {str(e)}", "Process", "error")
+        await asyncio.sleep(60)  # Run every minute, using async sleep
 
 async def submit_to_deepseek(ocr_result):
     """Submit OCR results to DeepSeek for processing."""
@@ -245,6 +221,11 @@ async def submit_to_deepseek(ocr_result):
         )
         return False
 
+async def process_image_async(image_path):
+    """Async wrapper for OCR processing"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, process_image, image_path)
+
 async def process_latest_screenshot():
     """Process the most recent screenshot file."""
     try:
@@ -253,24 +234,25 @@ async def process_latest_screenshot():
         if not files:
             return "No screenshot found", 404
             
-        most_recent_file = max(files, key=os.path.getmtime)
+        most_recent_file = max(files, key=lambda x: os.path.getmtime(x))
         filename = os.path.basename(most_recent_file)
         
         # Add longer delay to ensure file write is complete
-        time.sleep(0.5)  # Increased from 0.1 to 0.5 seconds
+        await asyncio.sleep(0.5)
         
-        # Process with local OCR
+        # Process with local OCR asynchronously
         log_debug("Starting OCR processing...", "Process", "info")
-        result = process_image(most_recent_file)
+        result = await process_image_async(most_recent_file)  # Use the new async version
         
         if result["status"] == "success":
-            # Save OCR result to logs
+            # Save OCR result to logs asynchronously
             timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             result_file = os.path.join(LOGS_DIR, f'{timestamp}_local_ocr_response.json')
-            with open(result_file, 'w') as f:
-                json.dump(result, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
+            
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: (
+                open(result_file, 'w').write(json.dumps(result, indent=2))
+            ))
 
             # Display extracted text with relative positioning
             log_debug("\n===============================", "Process", "info")
@@ -350,7 +332,7 @@ async def process_latest_screenshot():
         return error_msg, 500
 
 @app.route('/upload', methods=['POST'])
-def upload():
+async def upload():
     """Handle file uploads from the host."""
     file = request.files.get('file')
     if not file:
@@ -360,7 +342,9 @@ def upload():
     
     # Save file with explicit flush and sync
     try:
-        file.save(file_path)
+        # Use async file operations
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, file.save, file_path)
         
         # Verify file was written correctly with multiple retries
         max_retries = 3
@@ -369,34 +353,33 @@ def upload():
         
         for attempt in range(max_retries):
             try:
-                # Force sync to filesystem
-                with open(file_path, 'rb') as f:
-                    # For PNG files, verify the header
-                    if file_path.lower().endswith('.png'):
-                        png_signature = b'\x89PNG\r\n\x1a\n'
-                        file_signature = f.read(8)
-                        if file_signature != png_signature:
-                            if attempt < max_retries - 1:
-                                time.sleep(retry_delay)
-                                continue
-                            raise IOError("Invalid PNG signature")
-                    
-                    # Read the rest to verify complete file and get size
-                    f.seek(0)
-                    content = f.read()
-                    if len(content) < 100:  # Basic sanity check for minimum file size
-                        if attempt < max_retries - 1:
-                            time.sleep(retry_delay)
-                            continue
-                        raise IOError("File too small - likely corrupted")
-                    
-                    os.fsync(f.fileno())
+                async def verify_file():
+                    with open(file_path, 'rb') as f:
+                        if file_path.lower().endswith('.png'):
+                            png_signature = b'\x89PNG\r\n\x1a\n'
+                            file_signature = f.read(8)
+                            if file_signature != png_signature:
+                                return False
+                        
+                        f.seek(0)
+                        content = f.read()
+                        if len(content) < 100:
+                            return False
+                        
+                        os.fsync(f.fileno())
+                        return True
+
+                is_valid = await loop.run_in_executor(None, verify_file)
+                if is_valid:
                     success = True
                     break
+                
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
             except Exception:
                 if attempt == max_retries - 1:
                     raise
-                time.sleep(retry_delay)
+                await asyncio.sleep(retry_delay)
                 continue
         
         if not success:
@@ -410,7 +393,7 @@ def upload():
         # Try to clean up corrupted file
         try:
             if os.path.exists(file_path):
-                os.remove(file_path)
+                await loop.run_in_executor(None, os.remove, file_path)
         except:
             pass
         return str(e), 500
@@ -419,10 +402,9 @@ def upload():
 async def trigger():
     """Handle manual trigger to process the most recent file."""
     log_debug("Manual trigger received - starting processing workflow", "Process", "info")
-    result, status_code = await process_latest_screenshot()
-    if status_code != 200:
-        log_debug(f"Processing workflow failed: {result}", "Process", "error")
-    return "", 204  # Return immediately
+    # Create an async task instead of waiting for the result
+    asyncio.create_task(process_latest_screenshot())
+    return "", 204  # Return immediately without waiting
 
 @app.route('/signal', methods=['POST'])
 async def signal():
@@ -453,10 +435,11 @@ def health_check():
     log_network_message("Health check OK")
     return "OK", 200
 
-if __name__ == '__main__':
-    # Start the cleanup thread
-    Thread(target=cleanup_old_files, daemon=True).start()
-
+async def main():
+    """Main entry point with proper async task handling."""
+    # Start the cleanup task
+    cleanup_task = asyncio.create_task(cleanup_old_files())
+    
     # Start the Flask server with fixed port using Hypercorn
     port = get_server_port()
     print(f"Starting server on port {port}")
@@ -464,4 +447,15 @@ if __name__ == '__main__':
     
     config = Config()
     config.bind = [f"0.0.0.0:{port}"]
-    asyncio.run(serve(asgi_app, config))
+    
+    try:
+        await serve(asgi_app, config)
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+if __name__ == '__main__':
+    asyncio.run(main())

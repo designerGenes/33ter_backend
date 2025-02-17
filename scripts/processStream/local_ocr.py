@@ -7,6 +7,8 @@ import os
 from typing import List, Dict, Any, Optional
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from utils.socketio_utils import log_debug
 
 def find_tesseract_executable() -> Optional[str]:
@@ -273,4 +275,92 @@ def process_image(image_path: str, max_retries: int = 3) -> Dict:
             log_debug(error_msg, "OCR", "error")
             return {"status": "error", "error": error_msg}
             
+    return {"status": "error", "error": "Maximum retries exceeded"}
+
+# Create a thread pool for CPU-intensive operations
+ocr_thread_pool = ThreadPoolExecutor(max_workers=2)
+
+async def process_image_async(image_path: str, max_retries: int = 3) -> Dict:
+    """Async version of process_image that runs CPU-intensive operations in a thread pool"""
+    loop = asyncio.get_event_loop()
+    
+    async def run_ocr_step(img):
+        return await loop.run_in_executor(ocr_thread_pool, pytesseract.image_to_data, img, pytesseract.Output.DICT)
+    
+    async def read_and_process_image():
+        if not await loop.run_in_executor(ocr_thread_pool, ensure_file_readable, image_path):
+            error_msg = f"File not readable after {max_retries} attempts: {image_path}"
+            log_debug(error_msg, "OCR", "error")
+            return {"status": "error", "error": error_msg}
+        
+        log_debug("Reading image file...", "OCR", "info")
+        image = await loop.run_in_executor(ocr_thread_pool, cv2.imread, image_path, cv2.IMREAD_UNCHANGED)
+        
+        if image is None:
+            error_msg = f"Could not read image: {image_path}"
+            log_debug(error_msg, "OCR", "error")
+            return {"status": "error", "error": error_msg}
+            
+        height, width = image.shape[:2]
+        
+        log_debug("Preprocessing image for OCR...", "OCR", "info")
+        processed_images = await loop.run_in_executor(ocr_thread_pool, preprocess_for_ocr, image)
+        
+        all_text = []
+        all_boxes = []
+        
+        log_debug("Running OCR on processed images...", "OCR", "info")
+        for i, img in enumerate(processed_images, 1):
+            try:
+                data = await run_ocr_step(img)
+                for j in range(len(data['text'])):
+                    if int(data['conf'][j]) > 0:
+                        text = data['text'][j].strip()
+                        if text:
+                            x = int(data['left'][j])
+                            y = int(data['top'][j])
+                            w = int(data['width'][j])
+                            h = int(data['height'][j])
+                            all_text.append(text)
+                            all_boxes.append([x, y, x + w, y + h])
+                log_debug(f"OCR pass {i}/{len(processed_images)} successful", "OCR", "info")
+            except Exception as e:
+                log_debug(f"OCR error on image {i}/{len(processed_images)}: {str(e)}", "OCR", "warning")
+                continue
+        
+        text_with_boxes = []
+        seen = set()
+        for text, box in zip(all_text, all_boxes):
+            if text not in seen:
+                text_with_boxes.append({
+                    "text": text,
+                    "bbox": box
+                })
+                seen.add(text)
+        
+        if not text_with_boxes:
+            log_debug("No text detected in image", "OCR", "warning")
+            return {"status": "error", "error": "No text detected"}
+            
+        log_debug(f"Successfully extracted {len(text_with_boxes)} lines of text", "OCR", "info")
+        
+        return {
+            "status": "success",
+            "lines": text_with_boxes,
+            "image_width": width,
+            "image_height": height
+        }
+    
+    for attempt in range(max_retries):
+        try:
+            return await read_and_process_image()
+        except Exception as e:
+            if attempt < max_retries - 1:
+                log_debug(f"Processing failed (attempt {attempt + 1}/{max_retries}), retrying...", "OCR", "warning")
+                await asyncio.sleep(0.5)
+                continue
+            error_msg = f"Error processing image: {str(e)}"
+            log_debug(error_msg, "OCR", "error")
+            return {"status": "error", "error": error_msg}
+    
     return {"status": "error", "error": "Maximum retries exceeded"}
