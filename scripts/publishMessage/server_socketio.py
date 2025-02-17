@@ -144,7 +144,7 @@ async def broadcast_handler(request):
     """Handle broadcast requests from HTTP endpoint."""
     try:
         data = await request.json()
-        room = data.get("room", DEFAULT_ROOM)
+        room = data.get("room")
         message_data = data.get("data")
         
         if message_data:

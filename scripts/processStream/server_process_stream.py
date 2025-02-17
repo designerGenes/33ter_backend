@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from flask import Flask, request, jsonify
@@ -13,9 +15,9 @@ from hypercorn.config import Config
 from hypercorn.asyncio import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import WSGIRequestHandler
-from local_ocr import process_image_async
 from utils.path_config import get_screenshots_dir, get_logs_dir, get_scripts_dir
 from utils.socketio_utils import log_debug, log_to_socketio
+import scripts.processStream.local_ocr as local_ocr
 
 class CustomFlask(Flask):
     def log_exception(self, exc_info):
@@ -31,16 +33,8 @@ load_dotenv()
 
 app.wsgi_app = ProxyFix(app.wsgi_app)
 
-MUTE_PROCESS_MESSAGES = False
-mute_lock = Lock()
-
-def should_log_message():
-    global MUTE_PROCESS_MESSAGES
-    with mute_lock:
-        return not MUTE_PROCESS_MESSAGES
-
 def log_network_message(message):
-    if should_log_message() and isinstance(message, str):
+    if isinstance(message, str):
         message = message.strip()
         if message:
             print(f"[Process] {message}")
@@ -56,7 +50,7 @@ class RequestLoggingMiddleware:
         skip_logging = (
             path == '/health' or
             path == '/broadcast' or
-            (path == '/upload' and not MUTE_PROCESS_MESSAGES)
+            (path == '/upload')
         )
         
         if not skip_logging:
@@ -115,8 +109,7 @@ async def cleanup_old_files():
                 if file_age > 300:  # 5 minutes = 300 seconds
                     try:
                         os.remove(file_path)
-                        if not MUTE_PROCESS_MESSAGES:
-                            log_debug(f"Deleted old file: {file_name}")
+                        log_debug(f"Deleted old file: {file_name}")
                     except Exception as e:
                         log_debug(f"Error deleting file {file_name}: {str(e)}", "Process", "error")
         await asyncio.sleep(60)  # Run every minute, using async sleep
@@ -223,8 +216,12 @@ async def submit_to_deepseek(ocr_result):
 
 async def process_image_async(image_path):
     """Async wrapper for OCR processing"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, process_image, image_path)
+    try:
+        result = await local_ocr.process_image_async(image_path)
+        return result
+    except Exception as e:
+        log_debug(f"Error in OCR processing: {str(e)}", "Process", "error")
+        return {"status": "error", "error": str(e)}
 
 async def process_latest_screenshot():
     """Process the most recent screenshot file."""
@@ -385,8 +382,7 @@ async def upload():
         if not success:
             raise IOError("Failed to verify file integrity after multiple attempts")
                 
-        if not MUTE_PROCESS_MESSAGES:
-            log_debug(f"Saved and verified screenshot: {file.filename}", "Process", "info")
+        log_debug(f"Saved and verified screenshot: {file.filename}", "Process", "info")
         return "File received", 200
     except Exception as e:
         log_debug(f"Error saving file: {str(e)}", "Process", "error")
@@ -416,18 +412,6 @@ async def signal():
     else:
         log_debug("Processing completed successfully", "Process", "info")
     return "", 204
-
-@app.route('/mute', methods=['POST'])
-def toggle_mute():
-    """Toggle the mute state for Process screen messages."""
-    global MUTE_PROCESS_MESSAGES
-    
-    with mute_lock:
-        MUTE_PROCESS_MESSAGES = not MUTE_PROCESS_MESSAGES
-        status = "muted" if MUTE_PROCESS_MESSAGES else "unmuted"
-        if not MUTE_PROCESS_MESSAGES:
-            log_debug(f"Process messages {status}", "Process", "info")
-        return jsonify({"status": status}), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():

@@ -25,7 +25,6 @@ def format_socket_message(title: str, message: str, log_type: str = "info") -> s
     timestamp = datetime.now().strftime("%H:%M:%S")
     separator = "=" * 50
     
-    # Enhanced type indicators with descriptive emojis
     type_indicator = {
         "info": "ℹ️",
         "prime": "🌟",
@@ -37,14 +36,14 @@ def format_socket_message(title: str, message: str, log_type: str = "info") -> s
         "solution": "💡"
     }.get(log_type.lower(), "ℹ️")
     
+    # Build the header with timestamp, emoji, title and type
     formatted = f"\n{separator}\n"
-    formatted += f"{timestamp} {type_indicator} {title}\n"
+    formatted += f"{timestamp} {type_indicator} {title} ({log_type})\n"
     formatted += f"{separator}\n\n"
     
     # Format the message body with proper line breaks and indentation
     message_lines = message.strip().split('\n')
     
-    # Detect if this is a multi-line message
     if len(message_lines) == 1:
         # Single line messages get simple formatting
         formatted += f"  {message_lines[0]}"

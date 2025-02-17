@@ -1,4 +1,5 @@
 import curses
+import re
 import subprocess
 import os
 import sys
@@ -9,9 +10,17 @@ from collections import deque
 import threading
 from queue import Queue
 import json
-import requests  # Add requests import
-import logging  # Add logging import
-from utils.path_config import get_config_dir  # Add path_config import
+import requests
+import logging
+import psutil
+from utils.system_check import print_system_status
+from utils.path_config import (
+    get_screenshots_dir, 
+    get_app_root, 
+    get_config_dir, 
+    get_temp_dir,
+    get_frequency_config_file
+)
 
 # Color pair definitions (will be initialized in TerminalHub)
 HEADER_PAIR = 1
@@ -62,12 +71,29 @@ class ProcessManager:
         self.stop_threads[name] = threading.Event()
 
         def output_reader():
+            # Buffer for multi-line messages
+            buffer = []
+            
             while not self.stop_threads[name].is_set():
                 line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break
-                if line:
-                    self.output_queues[name].append(line.strip())
+                    
+                if name == "socket" and line.strip():
+                    # For socket messages, collect until we see a separator
+                    if "=" * 50 in line and buffer:
+                        # Join and add the complete message
+                        self.output_queues[name].append('\n'.join(buffer))
+                        buffer = [line.rstrip('\n')]
+                    else:
+                        buffer.append(line.rstrip('\n'))
+                elif line:
+                    # For other processes, add lines directly
+                    self.output_queues[name].append(line.rstrip('\n'))
+            
+            # Add any remaining buffered content
+            if buffer:
+                self.output_queues[name].append('\n'.join(buffer))
 
         thread = threading.Thread(target=output_reader, daemon=True)
         thread.start()
@@ -100,6 +126,7 @@ class ProcessManager:
             self.stop_process(name)
 
     def get_output(self, name):
+        """Get raw output lines without any processing."""
         return list(self.output_queues.get(name, []))
 
 import os
@@ -392,36 +419,30 @@ class TerminalHub:
         stdscr.addstr(2, current_pos, restart_text, curses.color_pair(MENU_PAIR))
         stdscr.addstr(3, 0, "=" * width, curses.color_pair(HEADER_PAIR))
 
+    def strip_ansi(self, text):
+        """Remove ANSI escape sequences from text."""
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        return ansi_escape.sub('', text)
+
     def draw_process_output(self, stdscr, process_name):
         height, width = stdscr.getmaxyx()
         
         if process_name == "screenshot":
             self.draw_screenshot_controls(stdscr, 4)
-            start_y = 8  # Start output after controls
+            start_y = 8
         elif process_name == "process":
-            # Draw process controls
-            controls = "[M]ute Upload Messages [T]rigger Processing [?]Help"
+            controls = "[T]rigger Processing [?]Help"
             stdscr.addstr(4, 2, controls, curses.color_pair(MENU_PAIR))
             
-            # Draw mute status
-            mute_status = "MUTED" if self.muted else "UNMUTED"
-            status_color = curses.color_pair(STATUS_STOPPED if self.muted else STATUS_RUNNING)
-            status_pos = len(controls) + 4
-            stdscr.addstr(4, status_pos, f"Status: ", self.get_view_color("process"))
-            stdscr.addstr(mute_status, status_color | curses.A_BOLD)
-            
-            # Draw cooldown timer if active
             current_time = time.time()
             if current_time - self.last_trigger_time < self.trigger_cooldown:
                 remaining = int(self.trigger_cooldown - (current_time - self.last_trigger_time))
                 cooldown_msg = f" (Cooldown: {remaining}s)"
-                stdscr.addstr(4, status_pos + len(f"Status: {mute_status}") + 1, 
-                            cooldown_msg, curses.color_pair(STATUS_STOPPED))
+                stdscr.addstr(4, len(controls) + 3, cooldown_msg, curses.color_pair(STATUS_STOPPED))
             
             stdscr.addstr(5, 0, "=" * width, curses.color_pair(HEADER_PAIR))
             start_y = 6
         elif process_name == "socket":
-            # Draw socket controls
             controls = "[P]ost Message [?]Help"
             stdscr.addstr(4, 2, controls, curses.color_pair(MENU_PAIR))
             stdscr.addstr(5, 0, "=" * width, curses.color_pair(HEADER_PAIR))
@@ -438,30 +459,61 @@ class TerminalHub:
             if result:
                 message, title, log_type = result
                 response = self.post_message_to_socket(message, title, log_type)
-                if response:
-                    self.process_manager.output_queues["socket"].append(response)
             return
 
-        output_lines = self.process_manager.get_output(process_name)
-        
-        # Filter out standard upload messages if muted
-        if process_name == "process" and self.muted:
-            output_lines = [line for line in output_lines if not line.startswith("Saved file:")]
+        # Get raw output and split into actual lines
+        output_lines = []
+        raw_output = self.process_manager.get_output(process_name)
+        for raw_line in raw_output:
+            output_lines.extend(raw_line.split('\n'))
             
         max_lines = height - start_y
         start_line = max(0, len(output_lines) - max_lines)
         
-        # Add a colored header for the current view using the view-specific color
         view_header = f"=== {process_name.upper()} OUTPUT ==="
         view_color = self.get_view_color(process_name)
         stdscr.addstr(4, (width - len(view_header)) // 2, view_header, 
                      view_color | curses.A_BOLD)
         
-        for i, line in enumerate(output_lines[start_line:]):
-            if i >= max_lines - 1:
+        current_y = start_y
+        for line in output_lines[start_line:]:
+            if current_y >= height - 1:
                 break
+                
             try:
-                stdscr.addstr(i + start_y, 0, line[:width-1])
+                clean_line = self.strip_ansi(line)
+                if not clean_line:
+                    current_y += 1
+                    continue
+                    
+                if process_name == "socket":
+                    # Match timestamp, emoji, title, and type pattern
+                    title_match = re.match(r'^(\d{2}:\d{2}:\d{2}) ([^\s]+) ([^(]+) \(([^)]+)\)', clean_line)
+                    if title_match:
+                        timestamp, emoji, title, msg_type = title_match.groups()
+                        x = 0
+                        # Print timestamp normally
+                        stdscr.addstr(current_y, x, timestamp)
+                        x += len(timestamp) + 1
+                        # Print emoji
+                        stdscr.addstr(current_y, x, emoji)
+                        x += len(emoji) + 1
+                        # Print title in socket color
+                        stdscr.addstr(current_y, x, title.strip(), self.get_view_color("socket") | curses.A_BOLD)
+                        x += len(title) + 1
+                        # Print type with appropriate color
+                        type_color = {
+                            'info': curses.color_pair(MENU_PAIR),
+                            'prime': curses.color_pair(SELECTED_VIEW),
+                            'warning': curses.color_pair(STATUS_STOPPED)
+                        }.get(msg_type.lower(), curses.A_NORMAL)
+                        stdscr.addstr(current_y, x, f"({msg_type})", type_color)
+                    else:
+                        # Print normal line
+                        stdscr.addstr(current_y, 0, clean_line[:width-1])
+                else:
+                    stdscr.addstr(current_y, 0, clean_line[:width-1])
+                current_y += 1
             except curses.error:
                 pass
 
@@ -571,7 +623,6 @@ class TerminalHub:
                 "Screenshots are processed using Azure Computer Vision for text extraction,",
                 "followed by AI analysis to identify and solve coding challenges.",
                 "",
-                "M: Toggle muting of standard upload messages",
                 "T: Trigger processing of latest screenshot (30s cooldown)",
                 "R: Restart process service",
                 "ESC: Close help",
@@ -580,9 +631,15 @@ class TerminalHub:
             "socket": [
                 "Socket View Help",
                 "",
-                "P: Post a new message to the chat",
+                "This view shows messages and allows sending manual messages.",
+                "",
+                "P: Post a new message - opens a form where you can set:",
+                "   • Title: The message header (shown in Socket theme color)",
+                "   • Type: Info (blue), Prime (magenta), or Warning (yellow)",
+                "   • Message: The content to send",
+                "",
                 "R: Restart socket service",
-                "ESC: Close help",
+                "ESC: Close help/form",
                 "?: Show this help"
             ]
         }
@@ -704,6 +761,14 @@ class TerminalHub:
     def post_message_to_socket(self, message, title="Nice shot", log_type="info"):
         """Post a message to the Socket.IO server."""
         try:
+            # 1. Format message first
+            from utils.socketio_utils import format_socket_message
+            formatted_message = format_socket_message(title, message, log_type)
+            
+            # 2. Add to local display queue immediately
+            self.process_manager.output_queues["socket"].append(formatted_message)
+            
+            # 3. Then send to server
             socket_port = self.config['services']['publishMessage']['port']
             socket_room = self.config['services']['publishMessage']['room']
             
@@ -716,25 +781,22 @@ class TerminalHub:
                 }
             }
             
-            # Format message for Socket screen output
-            from utils.socketio_utils import format_socket_message
-            formatted_message = format_socket_message(title, message, log_type)
-            
-            # Add to socket output queue first
-            self.process_manager.output_queues["socket"].append(formatted_message)
-            
-            # Then send to SocketIO server
             response = requests.post(
                 f"http://localhost:{socket_port}/broadcast",
                 json=payload
             )
             
-            if response.status_code == 200:
-                return None  # Don't add additional output
-            else:
-                return f"Error sending message: {response.status_code}"
+            if response.status_code != 200:
+                error_msg = f"Error sending message: {response.status_code}"
+                self.process_manager.output_queues["socket"].append(error_msg)
+                return error_msg
+                
+            return None
+            
         except Exception as e:
-            return f"Error sending message: {str(e)}"
+            error_msg = f"Error sending message: {str(e)}"
+            self.process_manager.output_queues["socket"].append(error_msg)
+            return error_msg
 
     def get_message_input(self, stdscr):
         """Get message input from user with a form-like interface."""
@@ -747,23 +809,24 @@ class TerminalHub:
         win.keypad(1)
         win.box()
         
-        # Form fields with default values
+        # Form fields with default values - reordered to put message last
         fields = [
-            {"label": "Message", "value": "Hey man", "length": 40},
+            {"label": "Title", "value": "Nice shot", "length": 30},
             {"label": "Type", "value": "Info", "options": ["Info", "Prime", "Warning"]},
-            {"label": "Title", "value": "Nice shot", "length": 30}
+            {"label": "Message", "value": "Hey man", "length": 40}
         ]
         current_field = 0
         
         while True:
             win.clear()
             win.box()
-            win.addstr(0, 2, " Post Message ", curses.A_BOLD)
+            win.addstr(0, 2, " Socket Message ", curses.A_BOLD)
             
-            # Draw fields
+            # Draw fields with enhanced styling
             for i, field in enumerate(fields):
                 y = i * 2 + 1
-                win.addstr(y, 2, f"{field['label']}: ")
+                label = f"{field['label']}: "
+                win.addstr(y, 2, label)
                 
                 if i == current_field:
                     attr = curses.A_BOLD | curses.A_UNDERLINE
@@ -771,9 +834,13 @@ class TerminalHub:
                     attr = curses.A_NORMAL
                 
                 if "options" in field:
-                    win.addstr(y, len(field['label']) + 4, f"< {field['value']} >", attr)
+                    value_text = f"< {field['value']} >"
+                    color = self.get_view_color("socket") if field['value'] == "Info" else \
+                           curses.color_pair(STATUS_RUNNING) if field['value'] == "Prime" else \
+                           curses.color_pair(STATUS_STOPPED)  # For Warning
+                    win.addstr(y, len(label) + 2, value_text, attr | color)
                 else:
-                    win.addstr(y, len(field['label']) + 4, field['value'], attr)
+                    win.addstr(y, len(label) + 2, field['value'], attr)
             
             # Draw instructions
             y = form_height - 2
@@ -788,8 +855,8 @@ class TerminalHub:
             if ch == 27:  # ESC
                 return None, None, None
             elif ch == 10:  # Enter
-                return (fields[0]['value'],  # message
-                        fields[2]['value'],  # title
+                return (fields[2]['value'],  # message
+                        fields[0]['value'],  # title
                         fields[1]['value'].lower())  # type
             elif ch == curses.KEY_UP:
                 current_field = (current_field - 1) % len(fields)
@@ -847,55 +914,43 @@ class TerminalHub:
                 elif self.post_message_active:
                     if key == 27:  # ESC
                         self.post_message_active = False
-                else:
-                    if key == ord('q'):
-                        break
-                    elif key == ord('?'):
-                        self.help_active = True
-                    elif key == ord('1'):
-                        self.current_view = "main"
-                    elif key == ord('2'):
-                        self.current_view = "screenshot"
-                    elif key == ord('3'):
-                        self.current_view = "process"
-                    elif key == ord('4'):
-                        self.current_view = "socket"
-                    elif key == ord('r'):
-                        if self.current_view in ["screenshot", "process", "socket"]:
-                            self.process_manager.stop_process(self.current_view)
-                            time.sleep(1)
-                            self.start_services()
-                    elif self.current_view == "screenshot":
-                        if key == ord(' '):  # Space
-                            self.toggle_screenshot_pause()
-                        elif key == ord('o'):  # Open folder
-                            self.open_screenshots_folder()
-                        elif key == curses.KEY_LEFT:
-                            self.current_frequency = max(0.5, self.current_frequency - 0.5)
-                            self.save_screenshot_frequency()  # Save immediately after change
-                        elif key == curses.KEY_RIGHT:
-                            self.current_frequency = min(10.0, self.current_frequency + 0.5)
-                            self.save_screenshot_frequency()  # Save immediately after change
-                        elif key == ord('f'):
-                            new_freq = self.get_frequency_input(stdscr)
-                            if new_freq is not None:
-                                self.current_frequency = new_freq
-                                self.save_screenshot_frequency()
-                                # Signal screenshot process to reload frequency
-                                tmp_dir = os.path.join(self.app_dir, ".tmp")
-                                os.makedirs(tmp_dir, exist_ok=True)
-                                with open(os.path.join(tmp_dir, "reload_frequency"), "w") as f:
-                                    f.write("")
-                    elif self.current_view == "process":
-                        if key == ord('m'):  # Toggle mute
-                            self.muted = not self.muted
-                        elif key == ord('t'):  # Trigger processing
-                            result = self.trigger_process()
-                            if result:
-                                self.process_manager.output_queues["process"].append(result)
-                    elif self.current_view == "socket":
-                        if key == ord('p'):  # Post message
-                            self.post_message_active = True
+                elif key == ord('?'):
+                    self.help_active = True
+                elif key == ord('q'):
+                    break
+                elif key == ord('r'):
+                    self.process_manager.restart_service(self.current_view)
+                elif key in (ord('1'), ord('2'), ord('3'), ord('4')):
+                    self.current_view = {
+                        ord('1'): "main",
+                        ord('2'): "screenshot",
+                        ord('3'): "process",
+                        ord('4'): "socket"
+                    }[key]
+                elif self.current_view == "screenshot":
+                    if key == ord(' '):
+                        self.toggle_screenshot_pause()
+                    elif key == ord('o'):
+                        self.open_screenshots_folder()
+                    elif key == curses.KEY_LEFT:
+                        self.current_frequency = max(0.5, self.current_frequency - 0.5)
+                        self.save_screenshot_frequency()  # Save immediately after change
+                    elif key == curses.KEY_RIGHT:
+                        self.current_frequency = min(10.0, self.current_frequency + 0.5)
+                        self.save_screenshot_frequency()  # Save immediately after change
+                    elif key == ord('f'):
+                        new_freq = self.get_frequency_input(stdscr)
+                        if new_freq is not None:
+                            self.current_frequency = new_freq
+                            self.save_screenshot_frequency()
+                elif self.current_view == "process":
+                    if key == ord('t'):  # Trigger processing
+                        result = self.trigger_process()
+                        if result:
+                            self.process_manager.output_queues["process"].append(result)
+                elif self.current_view == "socket":
+                    if key == ord('p'):  # Post message
+                        self.post_message_active = True
 
             except curses.error:
                 pass
