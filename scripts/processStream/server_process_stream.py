@@ -114,104 +114,29 @@ async def cleanup_old_files():
                         log_debug(f"Error deleting file {file_name}: {str(e)}", "Process", "error")
         await asyncio.sleep(60)  # Run every minute, using async sleep
 
-async def submit_to_deepseek(ocr_result):
-    """Submit OCR results to DeepSeek for processing."""
+async def submit_to_socketio(ocr_result):
+    """Send OCR results to iOS app via Socket.IO"""
     try:
-        # Save OCR results to a temporary file for logging
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        temp_file = os.path.join(LOGS_DIR, f'{timestamp}_ocr_result.json')
+        # Format OCR results as a message
+        ocr_lines = [line["text"] for line in ocr_result.get("lines", [])]
+        message = {
+            "type": "ocr_result",
+            "data": {
+                "lines": ocr_lines,
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+        }
         
-        with open(temp_file, 'w') as f:
-            json.dump(ocr_result, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-
-        # Use dedicated DeepSeek client
-        from deepseek_client import analyze_text
-        
-        log_debug("Sending text to DeepSeek for analysis...", "DeepSeek", "info")
-        
-        result = await analyze_text(ocr_result.get("lines", []))
-        
-        if result["status"] == "success":
-            # Only process challenge if one was actually found
-            if result["challenge"] is not None:
-                log_debug("Challenge found, sending to UI", "DeepSeek", "info")
-                challenge_message = (
-                    "📝 Challenge Description:\n\n"
-                    f"{result['challenge']}\n\n"
-                    "Generating solution..."
-                )
-                log_to_socketio(challenge_message, "Challenge", "Info")
-
-                # Only attempt solution if we had a real challenge
-                if result["solution"]:
-                    log_debug("Solution generated, sending to UI", "DeepSeek", "info")
-                    solution_message = (
-                        "Here's a solution to the challenge:\n\n"
-                        f"{result['solution']}\n\n"
-                        "This solution emphasizes:\n"
-                        "• Clean, maintainable code\n"
-                        "• Optimal time/space complexity\n"
-                        "• Language-specific best practices"
-                    )
-                    log_to_socketio(solution_message, "Solution", "Prime")
-                else:
-                    log_debug("No solution generated for challenge", "DeepSeek", "warning")
-                    log_to_socketio(
-                        "I found a coding challenge but couldn't generate a solution.\n"
-                        "This might be due to:\n"
-                        "• Complex or ambiguous requirements\n"
-                        "• Missing test cases or constraints\n"
-                        "• Incomplete challenge description\n\n"
-                        "Try capturing a clearer screenshot of the challenge.", 
-                        "Processing Status", 
-                        "Warning"
-                    )
-            else:
-                # No challenge was found - this is normal and should be a warning
-                log_debug("No coding challenge found in text", "DeepSeek", "info")
-                log_to_socketio(
-                    "No coding challenge was found in this screenshot.\n\n"
-                    "I analyzed the text but didn't find anything that looks like a programming challenge.\n\n"
-                    "Make sure:\n"
-                    "• The challenge text is clearly visible\n"
-                    "• The screenshot includes actual programming problem statements\n"
-                    "• The text isn't just general documentation or discussion\n\n"
-                    "Try taking another screenshot focusing on the challenge description.",
-                    "Analysis Result",
-                    "Warning"
-                )
-                
-            return True
-        else:
-            error_msg = result.get("error", "Unknown error in DeepSeek processing")
-            log_debug(error_msg, "DeepSeek", "error")
-            log_to_socketio(
-                "Failed to process the screenshot with DeepSeek.\n\n"
-                "Possible issues:\n"
-                "• OCR text might be unclear\n"
-                "• Screenshot might be incomplete\n"
-                "• Connection problems with DeepSeek\n\n"
-                "Check the Process screen for detailed error information.",
-                "Processing Error", 
-                "error"
-            )
-            return False
-            
-    except Exception as e:
-        error_msg = f"Error in DeepSeek processing: {str(e)}"
-        log_debug(error_msg, "DeepSeek", "error")
+        log_debug("Sending OCR results to mobile app...", "Process", "info")
         log_to_socketio(
-            "An unexpected error occurred.\n\n"
-            "This might be due to:\n"
-            "• Network connectivity issues\n"
-            "• Server resource constraints\n"
-            "• Internal processing errors\n\n"
-            "Please try again in a few moments.",
-            "System Error",
-            "error"
+            json.dumps(message),
+            "OCR Results",
+            "Info"
         )
+        return True
+    except Exception as e:
+        error_msg = f"Error sending to Socket.IO: {str(e)}"
+        log_debug(error_msg, "Process", "error")
         return False
 
 async def process_image_async(image_path):
@@ -234,94 +159,100 @@ async def process_latest_screenshot():
         most_recent_file = max(files, key=lambda x: os.path.getmtime(x))
         filename = os.path.basename(most_recent_file)
         
-        # Add longer delay to ensure file write is complete
-        await asyncio.sleep(0.5)
-        
-        # Process with local OCR asynchronously
-        log_debug("Starting OCR processing...", "Process", "info")
-        result = await process_image_async(most_recent_file)  # Use the new async version
-        
-        if result["status"] == "success":
-            # Save OCR result to logs asynchronously
-            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            result_file = os.path.join(LOGS_DIR, f'{timestamp}_local_ocr_response.json')
-            
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: (
-                open(result_file, 'w').write(json.dumps(result, indent=2))
-            ))
-
-            # Display extracted text with relative positioning
-            log_debug("\n===============================", "Process", "info")
-            log_debug("       Extracted Text:", "Process", "info")
-            log_debug("===============================", "Process", "info")
-            
-            # Get image dimensions from OCR result
-            img_width = result.get("image_width", 0)
-            img_height = result.get("image_height", 0)
-            
-            if img_width and img_height:
-                # Create a relative spatial representation
-                lines = result.get("lines", [])
-                
-                # Sort lines by vertical position
-                sorted_lines = sorted(lines, key=lambda x: x.get("bbox", [0,0,0,0])[1])
-                
-                # Group lines by vertical position (within 20px threshold)
-                vertical_groups = []
-                current_group = []
-                last_y = -float('inf')
-                
-                for line in sorted_lines:
-                    bbox = line.get("bbox", [0,0,0,0])
-                    x, y = bbox[0], bbox[1]
+        # Use file locking to prevent race conditions
+        lock_file = f"{most_recent_file}.lock"
+        try:
+            with open(lock_file, 'x') as _:  # Atomic file creation as lock
+                try:
+                    # Add longer delay to ensure file write is complete
+                    await asyncio.sleep(0.5)
                     
-                    # Start new group if y-coordinate differs significantly
-                    if abs(y - last_y) > 20:
-                        if current_group:
-                            vertical_groups.append(sorted(current_group, key=lambda x: x[0]))
-                        current_group = []
-                        last_y = y
+                    # Process with local OCR asynchronously
+                    log_debug("Starting OCR processing...", "Process", "info")
+                    result = await process_image_async(most_recent_file)
                     
-                    # Calculate relative x position (0-100)
-                    rel_x = min(100, max(0, int((x / img_width) * 100)))
-                    current_group.append((rel_x, line.get("text", "")))
-                
-                if current_group:
-                    vertical_groups.append(sorted(current_group, key=lambda x: x[0]))
+                    if result["status"] == "success":
+                        # Save OCR result to logs asynchronously
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                        result_file = os.path.join(LOGS_DIR, f'{timestamp}_local_ocr_response.json')
+                        
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, lambda: (
+                            open(result_file, 'w').write(json.dumps(result, indent=2))
+                        ))
 
-                # Display text with proportional spacing
-                for group in vertical_groups:
-                    line = ""
-                    last_x = 0
-                    for rel_x, text in group:
-                        # Add proportional spacing
-                        spaces = max(1, min(15, int((rel_x - last_x) / 7)))
-                        line += " " * spaces + text
-                        last_x = rel_x
-                    log_debug(line.lstrip(), "Process", "info")
-                    
-            else:
-                # Fallback to simple list if dimensions aren't available
-                for line in result.get("lines", []):
-                    log_debug(line.get("text", ""), "Process", "info")
+                        # Display extracted text with relative positioning
+                        log_debug("\n===============================", "Process", "info")
+                        log_debug("       Extracted Text:", "Process", "info")
+                        log_debug("===============================", "Process", "info")
+                        
+                        # Get image dimensions from OCR result
+                        img_width = result.get("image_width", 0)
+                        img_height = result.get("image_height", 0)
+                        
+                        if img_width and img_height:
+                            # Create a relative spatial representation
+                            lines = result.get("lines", [])
+                            sorted_lines = sorted(lines, key=lambda x: x.get("bbox", [0,0,0,0])[1])
+                            
+                            # Group lines by vertical position (within 20px threshold)
+                            vertical_groups = []
+                            current_group = []
+                            last_y = -float('inf')
+                            
+                            for line in sorted_lines:
+                                bbox = line.get("bbox", [0,0,0,0])
+                                x, y = bbox[0], bbox[1]
+                                
+                                # Start new group if y-coordinate differs significantly
+                                if abs(y - last_y) > 20:
+                                    if current_group:
+                                        vertical_groups.append(sorted(current_group, key=lambda x: x[0]))
+                                    current_group = []
+                                    last_y = y
+                                
+                                # Calculate relative x position (0-100)
+                                rel_x = min(100, max(0, int((x / img_width) * 100)))
+                                current_group.append((rel_x, line.get("text", "")))
+                            
+                            if current_group:
+                                vertical_groups.append(sorted(current_group, key=lambda x: x[0]))
 
-            log_debug("===============================\n", "Process", "info")
-            
-            # Start DeepSeek processing
-            log_debug("Sending to DeepSeek... away we go!", "Process", "info")
-            success = await submit_to_deepseek(result)
-            
-            if success:
-                log_debug("Processing workflow completed successfully", "Process", "info")
-            else:
-                log_debug("Processing completed with some errors", "Process", "warning")
-                
-            return "Processing complete", 200
-        else:
-            error_msg = result.get("error", "Unknown error during OCR")
-            log_debug(error_msg, "Process", "error")
-            return error_msg, 500
+                            # Display text with proportional spacing
+                            for group in vertical_groups:
+                                line = ""
+                                last_x = 0
+                                for rel_x, text in group:
+                                    spaces = max(1, min(15, int((rel_x - last_x) / 7)))
+                                    line += " " * spaces + text
+                                    last_x = rel_x
+                                log_debug(line.lstrip(), "Process", "info")
+                        else:
+                            # Fallback to simple list if dimensions aren't available
+                            for line in result.get("lines", []):
+                                log_debug(line.get("text", ""), "Process", "info")
+
+                        log_debug("===============================\n", "Process", "info")
+                        
+                        # Send OCR results to mobile app via Socket.IO
+                        success = await submit_to_socketio(result)
+                        if success:
+                            log_debug("OCR results sent successfully", "Process", "info")
+                        else:
+                            log_debug("Failed to send OCR results", "Process", "warning")
+                            
+                        return "Processing complete", 200
+                    else:
+                        error_msg = result.get("error", "Unknown error during OCR")
+                        log_debug(error_msg, "Process", "error")
+                        return error_msg, 500
+                finally:
+                    try:
+                        os.remove(lock_file)
+                    except OSError:
+                        pass
+        except FileExistsError:
+            return "File is already being processed", 409
             
     except Exception as e:
         error_msg = f"Error processing {filename if 'filename' in locals() else 'unknown file'}: {str(e)}"

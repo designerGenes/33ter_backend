@@ -1,46 +1,32 @@
-import socketio
+import os
+import sys
+import json
 import asyncio
-import logging
-from aiohttp import web, web_runner  
+
+# Add the root app directory to Python path for utils imports
+app_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(app_root)
+
+# Fallback path for utils if not found
+utils_path = os.path.join(app_root, 'utils')
+if utils_path not in sys.path:
+    sys.path.append(utils_path)
+
+from aiohttp import web
+import socketio
+import psutil
+import argparse
 import socket
-from zeroconf import ServiceInfo, IPVersion  
-from zeroconf.asyncio import AsyncZeroconf
-import json 
-import os, sys 
-import psutil 
-import argparse 
+from utils.socketio_utils import log_debug
 
-# Set up logging to file only
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Clear any existing handlers
-logger.handlers.clear()
-
-# Determine logs directory based on RUN_MODE
-run_mode = os.getenv("RUN_MODE", "local").lower()
-if run_mode == "docker":
-    logs_dir = "/app/logs"
-else:
-    logs_dir = os.path.join(os.getcwd(), "logs")
-os.makedirs(logs_dir, exist_ok=True)
-
-# Set up file handler for debug logging
-file_handler = logging.FileHandler(os.path.join(logs_dir, "socketio.log"))
-file_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-# Create a Socket.IO server
+# Set up Socket.IO server
 sio = socketio.AsyncServer(cors_allowed_origins='*')
 app = web.Application()
 sio.attach(app)
 
 # Constants
-SERVICE_TYPE = "_socketio._tcp.local."
-SERVICE_NAME = "33terServer"
 DEFAULT_ROOM = "33ter_room"
+VALID_LOG_TYPES = ["Info", "Warning", "Prime"]
 
 # Store connected clients and rooms
 connected_clients = {}
@@ -55,65 +41,40 @@ def get_local_ip():
     """Get the local IP address for the server."""
     ip = os.getenv("ADVERTISE_IP")
     if ip:
-        logger.info(f"Using ADVERTISE_IP: {ip}")
         return ip
     run_mode = os.getenv("RUN_MODE", "local").lower()
     if run_mode == "docker":
         try:
-            docker_host = socket.gethostbyname('host.docker.internal')
-            logger.info(f"Running in Docker mode; using Docker host IP: {docker_host}")
-            return docker_host
-        except Exception as e:
-            logger.error(f"Running in Docker mode but failed to get Docker host IP: {e}")
-    fallback_ip = socket.gethostbyname(socket.gethostname())
-    logger.info(f"Using local IP: {fallback_ip}")
-    return fallback_ip
+            return socket.gethostbyname('host.docker.internal')
+        except:
+            pass
+    return socket.gethostbyname(socket.gethostname())
 
 # Socket.IO Event Handlers
 @sio.event
 async def connect(sid, environ):
     """Handle client connection."""
-    logger.info(f"Client connected: {sid}")
     connected_clients[sid] = {"rooms": []}
-    await join_room(sid, {"room": DEFAULT_ROOM})
-
-@sio.event
-async def get_rooms(sid):
-    """Return list of available rooms."""
-    available_rooms = list(rooms.keys())
-    await sio.emit("available_rooms", {"rooms": available_rooms}, room=sid)
 
 @sio.event
 async def join_room(sid, data):
     """Handle client joining a room."""
-    room = data.get("room")
-    if room:
-        if room not in rooms:
-            rooms[room] = {"clients": set(), "messages": []}
-        await sio.enter_room(sid, room)
-        connected_clients[sid]["rooms"].append(room)
-        rooms[room]["clients"].add(sid)
-        logger.info(f"Client {sid} joined room {room}")
-        await sio.emit("room_joined", {
-            "room": room,
-            "client_count": len(rooms[room]["clients"])
-        }, room=sid)
-    else:
-        logger.warning(f"Client {sid} attempted to join without room name")
+    room = data.get("room", DEFAULT_ROOM)
+    if room not in rooms:
+        rooms[room] = {"clients": set(), "messages": []}
+    rooms[room]["clients"].add(sid)
+    connected_clients[sid]["rooms"].append(room)
+    await sio.enter_room(sid, room)
 
 @sio.event
 async def disconnect(sid):
     """Handle client disconnection."""
-    logger.info(f"Client disconnected: {sid}")
     if sid in connected_clients:
         for room in connected_clients[sid]["rooms"]:
             if room in rooms and sid in rooms[room]["clients"]:
                 rooms[room]["clients"].remove(sid)
             await sio.leave_room(sid, room)
-            logger.info(f"Client {sid} left room {room}")
         del connected_clients[sid]
-
-VALID_LOG_TYPES = ["Info", "Warning", "Prime"]
 
 @sio.event
 async def room_message(sid, data):
@@ -125,11 +86,9 @@ async def room_message(sid, data):
         message = message_data.get("message")
         log_type = message_data.get("logType", "Info")
         
-        # Validate log type
         if log_type not in VALID_LOG_TYPES:
             log_type = "Info"
-            
-        logger.info(f"Message sent to room {room}")
+        
         await sio.emit("room_message", {
             "data": {
                 "title": title,
@@ -137,14 +96,13 @@ async def room_message(sid, data):
                 "logType": log_type
             }
         }, room=room)
-    else:
-        logger.warning(f"Invalid room message data")
 
+# HTTP Endpoints
 async def broadcast_handler(request):
     """Handle broadcast requests from HTTP endpoint."""
     try:
         data = await request.json()
-        room = data.get("room")
+        room = data.get("room", DEFAULT_ROOM)
         message_data = data.get("data")
         
         if message_data:
@@ -152,12 +110,10 @@ async def broadcast_handler(request):
             message = message_data.get("message")
             log_type = message_data.get("logType", "Info")
             
-            # Validate log type
             if log_type not in VALID_LOG_TYPES:
                 log_type = "Info"
             
             if message:
-                logger.info(f"Broadcasting to room {room}")
                 await sio.emit("room_message", {
                     "data": {
                         "title": title,
@@ -166,33 +122,24 @@ async def broadcast_handler(request):
                     }
                 }, room=room)
                 return web.Response(text='Message broadcasted', status=200)
-            else:
-                logger.warning("No message provided")
-                return web.Response(text='No message provided', status=400)
-        else:
-            logger.warning("No data provided")
-            return web.Response(text='No data provided', status=400)
+            
+        return web.Response(text='No message provided', status=400)
     except Exception as e:
-        logger.error(f"Broadcast error: {e}")
         return web.Response(text='Internal server error', status=500)
 
 async def health_handler(request):
     """Health check endpoint."""
-    return web.Response(text='healthy', status=200)
+    return web.Response(text='OK')
 
-# Server startup and configuration
 def generate_server_config(ip, port, room):
     """Generate server configuration file."""
-    run_mode = os.getenv("RUN_MODE", "local").lower()
-    config_file = "/app/server_config.json" if run_mode == "docker" else os.path.join(os.getcwd(), "server_config.json")
     config = {
         "ip": ip,
         "port": port,
         "room": room
     }
-    with open(config_file, "w") as f:
-        json.dump(config, f, indent=4)
-    logger.info(f"Generated server config at {config_file}")
+    with open("server_config.json", "w") as f:
+        json.dump(config, f, indent=2)
 
 async def start_server():
     """Start the Socket.IO server."""
@@ -210,14 +157,12 @@ async def start_server():
     await runner.setup()
     site = web.TCPSite(runner, bind_ip, port)
     
+    await site.start()
+    print(f"Socket.IO server started on port {port}")
+    
     try:
-        await site.start()
-        logger.info(f"Socket.IO server started on port {port}")
-        while True:
-            await asyncio.sleep(3600)
-    except Exception as e:
-        logger.error(f"Server error: {e}")
-        raise
+        while True:  # Keep the server running
+            await asyncio.sleep(3600)  # Sleep for an hour
     finally:
         await runner.cleanup()
 
@@ -234,6 +179,8 @@ if __name__ == "__main__":
 
     try:
         asyncio.run(start_server())
+    except KeyboardInterrupt:
+        print("\nServer stopped by user")
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        print(f"Fatal error: {e}")
         sys.exit(1)

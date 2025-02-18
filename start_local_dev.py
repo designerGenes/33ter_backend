@@ -103,7 +103,6 @@ class ProcessManager:
             self.stop_threads[name].set()
             try:
                 pid = self.processes[name].pid
-                # Only attempt psutil operations if it's available
                 if 'psutil' in sys.modules:
                     parent = psutil.Process(pid)
                     children = parent.children(recursive=True)
@@ -111,7 +110,6 @@ class ProcessManager:
                         child.terminate()
                     parent.terminate()
                 else:
-                    # Fallback to basic process termination
                     os.kill(pid, signal.SIGTERM)
             except:
                 pass
@@ -128,6 +126,34 @@ class ProcessManager:
     def get_output(self, name):
         """Get raw output lines without any processing."""
         return list(self.output_queues.get(name, []))
+
+    def restart_service(self, service_name):
+        """Restart a specific service by name."""
+        self.stop_process(service_name)
+        time.sleep(1)  # Give process time to fully stop
+        
+        if service_name == "screenshot":
+            self.start_process(
+                "screenshot",
+                f"{self.venv_path}/bin/python3 {os.path.join(self.app_dir, 'beginRecording.py')}",
+                cwd=self.app_dir,
+                env=self.env
+            )
+        elif service_name == "process":
+            self.start_process(
+                "process",
+                f"{self.venv_path}/bin/python3 {os.path.join(self.app_dir, 'scripts/processStream/server_process_stream.py')} --port {self.config['services']['processStream']['port']}",
+                cwd=os.path.join(self.app_dir, "scripts/processStream"),
+                env=self.env
+            )
+        elif service_name == "socket":
+            socket_config = self.config['services']['publishMessage']
+            self.start_process(
+                "socket",
+                f"{self.venv_path}/bin/python3 {os.path.join(self.app_dir, 'scripts/publishMessage/server_socketio.py')} --port {socket_config['port']} --room {socket_config['room']}",
+                cwd=os.path.join(self.app_dir, "scripts/publishMessage"),
+                env=self.env
+            )
 
 import os
 import sys
@@ -370,13 +396,15 @@ class TerminalHub:
             env=self.env
         )
 
-        # Start SocketIO Server
+        # Start SocketIO Server with correct PYTHONPATH
         socket_config = self.config['services']['publishMessage']
+        socket_env = self.env.copy()
+        socket_env["PYTHONPATH"] = f"{self.app_dir}:{socket_env.get('PYTHONPATH', '')}"
         self.process_manager.start_process(
             "socket",
             f"{self.venv_path}/bin/python3 {os.path.join(self.app_dir, 'scripts/publishMessage/server_socketio.py')} --port {socket_config['port']} --room {socket_config['room']}",
             cwd=os.path.join(self.app_dir, "scripts/publishMessage"),
-            env=self.env
+            env=socket_env
         )
 
     def draw_header(self, stdscr):
