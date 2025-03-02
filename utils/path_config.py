@@ -1,6 +1,5 @@
 """Path configuration utilities for 33ter application."""
 import os
-import sys
 from pathlib import Path
 
 def get_app_root():

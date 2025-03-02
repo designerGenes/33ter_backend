@@ -37,4 +37,4 @@ ENV PYTHONUNBUFFERED=1 \
     SCREENSHOT_INTERVAL=4.0
 
 # Run the Python client
-CMD ["python", "socketio_client.py"]
+CMD ["python", "socketio_server/client.py"]

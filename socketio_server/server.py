@@ -5,16 +5,14 @@ Handles communication between the Python screenshot/OCR service and the iOS app.
 """
 import os
 import sys
-import json
 import logging
 import argparse
 from datetime import datetime
 import asyncio
 import socketio
 from aiohttp import web
-
-from utils.server_config import get_server_config, update_server_config
-from utils.path_config import get_logs_dir
+from utils import get_server_config, update_server_config
+from utils import get_logs_dir
 
 def setup_logging(log_level: str = "INFO"):
     """Configure logging with the specified level."""
@@ -235,15 +233,31 @@ def main():
         logger.info(f"Default room: {args.room}")
         logger.info(f"Log level: {args.log_level}")
         
+        # Update config with any command line overrides - moved from init_app
+        server_updates = {
+            'server': {
+                'host': args.host,
+                'port': args.port,
+                'room': args.room,
+                'log_level': args.log_level
+            }
+        }
+        update_server_config(server_updates)
+        global current_room
+        current_room = args.room
+        
         # Create event loop
         loop = asyncio.get_event_loop()
+        
+        # Start health check if enabled - moved from init_app
+        if config['health_check']['enabled']:
+            loop.create_task(health_check())
         
         # Start server
         web.run_app(
             app,
             host=args.host,
-            port=args.port,
-            loop=loop
+            port=args.port
         )
         
     except Exception as e:

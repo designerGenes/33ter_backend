@@ -1,7 +1,0 @@
-python-socketio 
-flask-socketio 
-requests 
-aiohttp 
-zeroconf
-argparse
-psutil

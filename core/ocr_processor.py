@@ -5,7 +5,7 @@ from datetime import datetime
 import pytesseract
 from PIL import ImageGrab
 
-from utils.path_config import get_screenshots_dir, get_logs_dir
+from utils import get_screenshots_dir, get_logs_dir
 
 class OCRProcessor:
     """Handles screenshot capture and OCR processing."""

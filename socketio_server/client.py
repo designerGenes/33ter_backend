@@ -9,9 +9,8 @@ import logging
 import argparse
 from datetime import datetime
 import socketio
-
-from utils.server_config import get_server_config
-from utils.path_config import get_logs_dir
+from utils import get_server_config
+from utils import get_logs_dir
 from core.screenshot_manager import ScreenshotManager
 
 def setup_logging(log_level: str = "INFO"):
@@ -40,7 +39,7 @@ class ScreenshotClient:
         
         # Initialize screenshot manager
         self.screenshot_manager = ScreenshotManager()
-
+    
     def setup_handlers(self):
         """Set up Socket.IO event handlers."""
         @self.sio.event
@@ -50,18 +49,18 @@ class ScreenshotClient:
             self.sio.emit('join_room', {'room': self.config['server']['room']})
             # Start screenshot capture once connected
             self.screenshot_manager.start_capturing()
-
+        
         @self.sio.event
         def disconnect():
             self.logger.info("Disconnected from Socket.IO server")
             # Stop screenshot capture on disconnect
             self.screenshot_manager.stop_capturing()
-
+        
         @self.sio.on('trigger_ocr')
         def on_trigger_ocr():
             self.logger.info("OCR trigger received")
             self.process_latest_screenshot()
-
+    
     def connect_to_server(self):
         """Connect to the Socket.IO server."""
         server_url = f"http://{self.config['server']['host']}:{self.config['server']['port']}"
@@ -71,7 +70,7 @@ class ScreenshotClient:
         except Exception as e:
             self.logger.error(f"Failed to connect to server: {e}")
             return False
-
+    
     def process_latest_screenshot(self):
         """Process the latest screenshot and send results."""
         result = self.screenshot_manager.process_latest_screenshot()
@@ -81,7 +80,7 @@ class ScreenshotClient:
                 self.logger.info("OCR result sent successfully")
             except Exception as e:
                 self.logger.error(f"Failed to send OCR result: {e}")
-
+    
     def disconnect(self):
         """Disconnect from the Socket.IO server."""
         if self.sio.connected:

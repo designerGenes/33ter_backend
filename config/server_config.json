@@ -1,13 +1,15 @@
 {
-    "server": {
-        "host": "0.0.0.0",
-        "port": 5348,
-        "room": "33ter_room",
-        "cors_origins": "*",
-        "log_level": "INFO"
-    },
-    "health_check": {
-        "enabled": true,
-        "interval": 30
-    }
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5348,
+    "room": "33ter_room",
+    "cors_origins": "*",
+    "log_level": "INFO",
+    "ping_timeout": 60000,
+    "ping_interval": 45000
+  },
+  "health_check": {
+    "enabled": true,
+    "interval": 30
+  }
 }

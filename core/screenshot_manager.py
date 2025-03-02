@@ -6,7 +6,7 @@ import logging
 import threading
 from datetime import datetime
 
-from utils.path_config import get_config_dir, get_temp_dir, get_logs_dir
+from utils import get_config_dir, get_temp_dir, get_logs_dir
 from .ocr_processor import OCRProcessor
 
 class ScreenshotManager:

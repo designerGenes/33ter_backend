@@ -1,8 +1,24 @@
-2#!/usr/bin/env python3
+#!/usr/bin/env python3
 import os
 import sys
 import subprocess
 import shutil
+
+def create_package_dirs(app_dir):
+    """Create necessary package directories"""
+    dirs = [
+        os.path.join(app_dir, "socketio_server"),
+        os.path.join(app_dir, "utils"),
+        os.path.join(app_dir, "config"),
+        os.path.join(app_dir, "logs"),
+    ]
+    for d in dirs:
+        if not os.path.exists(d):
+            os.makedirs(d)
+        # Create __init__.py if it doesn't exist
+        init_file = os.path.join(d, "__init__.py")
+        if not os.path.exists(init_file):
+            open(init_file, 'a').close()
 
 def main():
     app_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +42,9 @@ def main():
         print(f"Error creating virtual environment: {e}")
         sys.exit(1)
 
+    # Create package directories
+    create_package_dirs(app_dir)
+
     # Get paths
     pip_path = os.path.join(venv_path, "bin", "pip")
     requirements_path = os.path.join(app_dir, "req", "requirements.txt")
@@ -42,7 +61,8 @@ def main():
 
     print("\nSetup complete! Now run:")
     print(f"source {venv_path}/bin/activate")
-    print("python3 start_local_dev.py")
+    print("export PYTHONPATH=$PYTHONPATH:/Users/jadennation/DEV/33ter/app")
+    print("python3 socketio_server/client.py")
 
 if __name__ == "__main__":
     main()

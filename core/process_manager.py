@@ -2,13 +2,12 @@
 import os
 import sys
 import time
-import psutil
 import logging
 import subprocess
 from typing import Dict, Optional
 
-from utils.path_config import get_logs_dir, get_screenshots_dir
-from utils.server_config import get_server_config
+from utils import get_logs_dir, get_screenshots_dir
+from utils import get_server_config
 
 class ProcessManager:
     """Manages the various service processes for the 33ter application."""
@@ -53,13 +52,13 @@ class ProcessManager:
             if service_name == 'socket':
                 command = [
                     sys.executable,
-                    'socketio_server.py',
+                    'socketio_server/server.py',
                     '--host', self.config['server']['host'],
                     '--port', str(self.config['server']['port']),
                     '--room', self.config['server']['room']
                 ]
             elif service_name == 'screenshot':
-                command = [sys.executable, 'socketio_client.py']
+                command = [sys.executable, 'socketio_server/client.py']
             else:
                 self.logger.error(f"Unknown service: {service_name}")
                 return

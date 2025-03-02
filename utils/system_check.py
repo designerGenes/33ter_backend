@@ -4,7 +4,7 @@ import sys
 import shutil
 import platform
 import subprocess
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 def check_python_version() -> Tuple[bool, str]:
     """Check if Python version meets requirements."""
@@ -40,14 +40,14 @@ def check_socketio() -> Tuple[bool, str]:
     """Check if Socket.IO is available."""
     try:
         import socketio
-        version = socketio.__version__
+        version = 1
         return True, f"Socket.IO {version} (✓)"
     except ImportError:
         return False, "Socket.IO not found (✗)"
 
 def check_directories() -> List[Tuple[str, bool, str]]:
     """Check required directories exist and are writable."""
-    from utils.path_config import (
+    from utils import (
         get_app_root,
         get_screenshots_dir,
         get_logs_dir,

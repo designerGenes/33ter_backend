@@ -3,10 +3,8 @@ import os
 import re
 import json
 import time
-import threading
-from datetime import datetime
 
-from utils.path_config import (
+from utils import (
     get_screenshots_dir, 
     get_temp_dir, 
     get_frequency_config_file

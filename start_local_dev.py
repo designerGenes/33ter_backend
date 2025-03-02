@@ -12,9 +12,9 @@ import logging
 from typing import Optional
 
 try:
-    from utils.system_check import print_system_status
-    from utils.path_config import get_logs_dir
-    from utils.config_loader import config
+    from utils import print_system_status
+    from utils import get_logs_dir
+    from utils import config
     from core.process_manager import ProcessManager
     from core.terminal_ui import TerminalUI
 except ImportError as e:
