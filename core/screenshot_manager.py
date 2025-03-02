@@ -19,6 +19,7 @@ class ScreenshotManager:
         self.logger = self._setup_logging()
         self.screenshot_interval = 4.0
         self.load_screenshot_config()
+        self.output_buffer = []
         
     def _setup_logging(self):
         """Configure screenshot manager logging."""
@@ -44,12 +45,24 @@ class ScreenshotManager:
             if os.path.exists(config_file):
                 with open(config_file) as f:
                     self.screenshot_interval = float(json.load(f).get('frequency', 4.0))
+                    self._add_to_buffer(f"Screenshot frequency set to {self.screenshot_interval}s")
         except Exception as e:
             self.logger.error(f"Error loading screenshot config: {e}")
+
+    def _add_to_buffer(self, message, level="info"):
+        """Add a message to the output buffer with timestamp."""
+        timestamp = time.strftime("%H:%M:%S")
+        emoji = "📸" if "screenshot" in message.lower() else "🗑️" if "deleted" in message.lower() else "ℹ️"
+        self.output_buffer.append(f"{timestamp} {emoji} {message} ({level})")
+        
+        # Keep buffer size manageable
+        if len(self.output_buffer) > 1000:
+            self.output_buffer.pop(0)
 
     def _capture_loop(self):
         """Main screenshot capture loop."""
         self.logger.info("Starting screenshot capture loop")
+        self._add_to_buffer("Screenshot capture started")
         
         while self.capturing:
             try:
@@ -60,10 +73,15 @@ class ScreenshotManager:
                     continue
                 
                 # Capture screenshot
-                self.ocr_processor.capture_screenshot()
+                filepath = self.ocr_processor.capture_screenshot()
+                if filepath:
+                    filename = os.path.basename(filepath)
+                    self._add_to_buffer(f"Captured: {filename}")
                 
                 # Clean up old screenshots
-                self.ocr_processor.cleanup_old_screenshots()
+                deleted = self.ocr_processor.cleanup_old_screenshots()
+                if deleted:
+                    self._add_to_buffer(f"Cleaned up {deleted} old screenshots", "info")
                 
                 # Check for frequency changes
                 reload_file = os.path.join(get_temp_dir(), "reload_frequency")
@@ -79,6 +97,7 @@ class ScreenshotManager:
                 
             except Exception as e:
                 self.logger.error(f"Error in capture loop: {e}")
+                self._add_to_buffer(f"Error: {str(e)}", "warning")
                 time.sleep(1)  # Brief sleep on error before retry
 
     def start_capturing(self):
@@ -90,6 +109,7 @@ class ScreenshotManager:
         self.capture_thread = threading.Thread(target=self._capture_loop)
         self.capture_thread.daemon = True  # Thread will exit when main process exits
         self.capture_thread.start()
+        self._add_to_buffer("Screenshot service started")
         self.logger.info("Screenshot capture started")
 
     def stop_capturing(self):
@@ -98,12 +118,20 @@ class ScreenshotManager:
         if self.capture_thread:
             self.capture_thread.join()
             self.capture_thread = None
+        self._add_to_buffer("Screenshot service stopped")
         self.logger.info("Screenshot capture stopped")
 
     def process_latest_screenshot(self):
         """Process the most recent screenshot."""
-        return self.ocr_processor.process_latest_screenshot()
+        result = self.ocr_processor.process_latest_screenshot()
+        if result:
+            self._add_to_buffer("OCR processing successful", "info")
+        return result
 
     def is_capturing(self):
         """Check if screenshot capture is active."""
         return self.capturing and (self.capture_thread is not None and self.capture_thread.is_alive())
+
+    def get_output(self):
+        """Get the current output buffer."""
+        return self.output_buffer.copy()

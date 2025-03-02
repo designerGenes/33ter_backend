@@ -32,44 +32,62 @@ def setup_logging(log_level: str = "INFO"):
 config = get_server_config()
 logger = setup_logging(config['server']['log_level'])
 
-# Create Socket.IO server
+# Create Socket.IO server with reduced logging
 sio = socketio.AsyncServer(
     async_mode='aiohttp',
     cors_allowed_origins=config['server']['cors_origins'],
-    logger=True,
-    engineio_logger=True
+    logger=False,  # Disable default logging
+    engineio_logger=False  # Disable engineio logging
 )
 
 # Create web application
 app = web.Application()
 sio.attach(app)
 
-# Keep track of connected clients
-connected_clients = set()
+# Keep track of clients by type
+ios_clients = set()
+python_clients = set()
 current_room = config['server']['room']
+
+def get_client_count():
+    """Get current iOS client count."""
+    return len(ios_clients)
 
 # Event handlers
 @sio.event
 async def connect(sid, environ):
     """Handle client connection."""
-    logger.info(f"Client connected: {sid}")
-    connected_clients.add(sid)
+    user_agent = environ.get('HTTP_USER_AGENT', '').lower()
     
-    # Emit welcome message
-    await sio.emit('message', {
-        'type': 'info',
-        'data': {
-            'message': 'Connected to 33ter Socket.IO server',
-            'timestamp': datetime.now().isoformat()
-        }
-    }, room=sid)
+    if 'ios' in user_agent or 'iphone' in user_agent or 'ipad' in user_agent:
+        ios_clients.add(sid)
+        logger.info(f"iOS client connected: {sid}")
+    else:
+        python_clients.add(sid)
+        logger.info(f"Python client connected: {sid}")
+    
+    # Notify about iOS client count changes
+    await broadcast_client_count()
 
 @sio.event
 async def disconnect(sid):
     """Handle client disconnection."""
-    logger.info(f"Client disconnected: {sid}")
-    if sid in connected_clients:
-        connected_clients.remove(sid)
+    was_ios = sid in ios_clients
+    ios_clients.discard(sid)
+    python_clients.discard(sid)
+    
+    if was_ios:
+        logger.info(f"iOS client disconnected: {sid}")
+        await broadcast_client_count()
+    else:
+        logger.info(f"Python client disconnected: {sid}")
+
+async def broadcast_client_count():
+    """Broadcast current iOS client count to all clients."""
+    await sio.emit('client_count', {
+        'count': get_client_count(),
+        'timestamp': datetime.now().isoformat()
+    }, room=current_room)
 
 @sio.event
 async def join_room(sid, data):
@@ -77,7 +95,7 @@ async def join_room(sid, data):
     global current_room
     
     if not isinstance(data, dict) or 'room' not in data:
-        logger.error(f"Invalid join_room data from {sid}: {data}")
+        logger.error(f"Invalid join_room data from {sid}")
         return
     
     room = data['room']
@@ -85,13 +103,17 @@ async def join_room(sid, data):
     sio.enter_room(sid, room)
     logger.info(f"Client {sid} joined room: {room}")
     
-    await sio.emit('message', {
-        'type': 'info',
-        'data': {
-            'message': f'Joined room: {room}',
-            'timestamp': datetime.now().isoformat()
-        }
-    }, room=sid)
+    # Send welcome and status
+    if sid in ios_clients:
+        await sio.emit('message', {
+            'type': 'info',
+            'data': {
+                'message': f'Connected to 33ter server in room: {room}',
+                'timestamp': datetime.now().isoformat()
+            }
+        }, room=sid)
+    
+    await broadcast_client_count()
 
 @sio.event
 async def leave_room(sid, data):
@@ -106,6 +128,10 @@ async def leave_room(sid, data):
 @sio.event
 async def ocr_result(sid, data):
     """Handle OCR results from Python client and broadcast to room."""
+    if sid not in python_clients:
+        logger.warning(f"Unauthorized OCR result from {sid}")
+        return
+        
     if not current_room:
         logger.warning("No room set for OCR result broadcast")
         return
@@ -113,21 +139,21 @@ async def ocr_result(sid, data):
     logger.info(f"Broadcasting OCR result to room {current_room}")
     
     try:
+        text = data[0].get('text', '')
         # Format message for iOS client
         message = {
             'type': 'prime',
             'data': {
-                'text': data[0].get('text', ''),
+                'text': text,
                 'timestamp': datetime.now().isoformat()
             }
         }
         
         await sio.emit('message', message, room=current_room)
-        logger.debug(f"OCR result broadcast successful: {len(data[0].get('text', ''))} chars")
+        logger.info(f"OCR result broadcast successful: {len(text)} chars")
         
     except Exception as e:
         logger.error(f"Error broadcasting OCR result: {e}")
-        # Send error message to room
         await sio.emit('message', {
             'type': 'error',
             'data': {
@@ -139,6 +165,10 @@ async def ocr_result(sid, data):
 @sio.event
 async def trigger_ocr(sid):
     """Handle OCR trigger request from iOS client."""
+    if sid not in ios_clients:
+        logger.warning(f"Unauthorized OCR trigger from {sid}")
+        return
+        
     if not current_room:
         logger.warning("No room set for OCR trigger")
         return
@@ -148,21 +178,19 @@ async def trigger_ocr(sid):
 
 @sio.event
 async def message(sid, data):
-    """Handle generic messages."""
+    """Handle custom messages."""
     if not isinstance(data, dict):
         return
-        
+    
     msg_type = data.get('type', 'info')
-    msg_data = data.get('data', {})
+    if msg_type == 'custom':
+        title = data.get('title', '')
+        message = data.get('message', '')
+        msg_level = data.get('msg_type', 'info')
+        logger.info(f"Custom message: {title} ({msg_level})")
     
     if current_room:
-        await sio.emit('message', {
-            'type': msg_type,
-            'data': {
-                'message': msg_data.get('message', ''),
-                'timestamp': datetime.now().isoformat()
-            }
-        }, room=current_room)
+        await sio.emit('message', data, room=current_room)
 
 async def health_check():
     """Periodic health check and status broadcast."""
@@ -174,11 +202,7 @@ async def health_check():
     while True:
         if current_room:
             try:
-                await sio.emit('server_status', {
-                    'status': 'healthy',
-                    'clients': len(connected_clients),
-                    'timestamp': datetime.now().isoformat()
-                }, room=current_room)
+                await broadcast_client_count()
             except Exception as e:
                 logger.error(f"Health check broadcast failed: {e}")
         await asyncio.sleep(interval)
@@ -233,7 +257,7 @@ def main():
         logger.info(f"Default room: {args.room}")
         logger.info(f"Log level: {args.log_level}")
         
-        # Update config with any command line overrides - moved from init_app
+        # Update config with any command line overrides
         server_updates = {
             'server': {
                 'host': args.host,
@@ -249,7 +273,7 @@ def main():
         # Create event loop
         loop = asyncio.get_event_loop()
         
-        # Start health check if enabled - moved from init_app
+        # Start health check if enabled
         if config['health_check']['enabled']:
             loop.create_task(health_check())
         

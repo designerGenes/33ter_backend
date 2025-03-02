@@ -16,10 +16,10 @@ MENU_PAIR = 2
 STATUS_RUNNING = 3
 STATUS_STOPPED = 4
 SELECTED_VIEW = 5
-MAIN_VIEW = 6
+STATUS_VIEW = 6
 SCREENSHOT_VIEW = 7
-PROCESS_VIEW = 8
-SOCKET_VIEW = 9
+DEBUG_VIEW = 8
+CONNECTION_ACTIVE = 9
 
 class TerminalUI:
     """
@@ -29,14 +29,14 @@ class TerminalUI:
     
     def __init__(self, process_manager):
         self.process_manager = process_manager
-        self.current_view = "main"
+        self.current_view = "status"  # Changed default view
         self.help_active = False
         self.post_message_active = False
         self.current_frequency = 4.0
-        self.muted = False
         self.trigger_cooldown = 30  # seconds
         self.last_trigger_time = 0
         self.screenshots_dir = get_screenshots_dir()
+        self.stdscr = None
         self.load_screenshot_frequency()
 
     def setup_colors(self):
@@ -52,44 +52,42 @@ class TerminalUI:
         curses.init_pair(SELECTED_VIEW, 213, -1)  # Bright purple for selected
         
         # Colors for each view
-        curses.init_pair(MAIN_VIEW, 226, -1)  # Yellow for main view
+        curses.init_pair(STATUS_VIEW, 226, -1)  # Yellow for status view
         curses.init_pair(SCREENSHOT_VIEW, 118, -1)  # Light green for screenshot
-        curses.init_pair(PROCESS_VIEW, 147, -1)  # Purple for process view
-        curses.init_pair(SOCKET_VIEW, 208, -1)  # Orange for socket view
+        curses.init_pair(DEBUG_VIEW, 208, -1)  # Orange for debug view
+        curses.init_pair(CONNECTION_ACTIVE, 46, -1)  # Bright green for active connections
 
     def get_view_color(self, view_name):
         """Get the color pair for a specific view"""
         color_map = {
-            "main": MAIN_VIEW,
+            "status": STATUS_VIEW,
             "screenshot": SCREENSHOT_VIEW,
-            "process": PROCESS_VIEW,
-            "socket": SOCKET_VIEW
+            "debug": DEBUG_VIEW
         }
         return curses.color_pair(color_map.get(view_name, MENU_PAIR))
 
     def draw_header(self, stdscr):
         """Draw the application header and menu bar"""
         height, width = stdscr.getmaxyx()
-        header = "33ter Process Manager"
+        header = "33ter"
         
         stdscr.addstr(0, 0, "=" * width, curses.color_pair(HEADER_PAIR))
         stdscr.addstr(1, (width - len(header)) // 2, header, 
                      curses.color_pair(HEADER_PAIR) | curses.A_BOLD)
         
-        # Draw menu items with different colors for selected view
+        # Updated menu items for new layout
         menu_items = [
-            ("[1]Main", "main"),
+            ("[1]Status", "status"),
             ("[2]Screenshot", "screenshot"),
-            ("[3]Process", "process"),
-            ("[4]Socket", "socket")
+            ("[3]Debug", "debug")
         ]
         
         quit_text = "[Q]uit"
-        restart_text = "[R]estart Current"
+        help_text = "[?]Help"
         
         # Calculate positions
         total_menu_width = sum(len(item[0]) + 2 for item in menu_items)
-        total_width = len(quit_text) + total_menu_width + len(restart_text) + 2
+        total_width = len(quit_text) + total_menu_width + len(help_text) + 2
         start_pos = (width - total_width) // 2
         
         # Draw the menu bar
@@ -100,12 +98,11 @@ class TerminalUI:
             color = self.get_view_color(view) if view == self.current_view else curses.color_pair(MENU_PAIR)
             if view == self.current_view:
                 stdscr.addstr(2, current_pos, f"|{item}|", color | curses.A_BOLD)
-                current_pos += len(item) + 2
             else:
                 stdscr.addstr(2, current_pos, f" {item} ", color)
-                current_pos += len(item) + 2
+            current_pos += len(item) + 2
         
-        stdscr.addstr(2, current_pos, restart_text, curses.color_pair(MENU_PAIR))
+        stdscr.addstr(2, current_pos, help_text, curses.color_pair(MENU_PAIR))
         stdscr.addstr(3, 0, "=" * width, curses.color_pair(HEADER_PAIR))
 
     def strip_ansi(self, text):
@@ -120,11 +117,8 @@ class TerminalUI:
         if process_name == "screenshot":
             self.draw_screenshot_controls(stdscr, 4)
             start_y = 8
-        elif process_name == "process":
-            self.draw_process_controls(stdscr, 4)
-            start_y = 6
-        elif process_name == "socket":
-            self.draw_socket_controls(stdscr, 4)
+        elif process_name == "debug":
+            self.draw_debug_controls(stdscr, 4)
             start_y = 6
         else:
             start_y = 5
@@ -132,7 +126,7 @@ class TerminalUI:
         if self.help_active:
             self.draw_help_screen(stdscr)
             return
-        elif self.post_message_active and process_name == "socket":
+        elif self.post_message_active and process_name == "debug":
             result = self.get_message_input(stdscr)
             self.post_message_active = False
             if result:
@@ -140,61 +134,168 @@ class TerminalUI:
                 self.process_manager.post_message_to_socket(message, title, log_type)
             return
 
-        # Get raw output and split into actual lines
-        output_lines = []
-        raw_output = self.process_manager.get_output(process_name)
-        for raw_line in raw_output:
-            output_lines.extend(raw_line.split('\n'))
+        # Get and filter output
+        output_lines = self.process_manager.get_output(process_name)
+        if not output_lines:
+            view_color = self.get_view_color(process_name)
+            empty_msg = "(No messages)" if process_name == "debug" else "(No screenshot events)"
+            try:
+                stdscr.addstr(start_y + 2, (width - len(empty_msg)) // 2, 
+                             empty_msg, view_color | curses.A_DIM)
+            except curses.error:
+                pass
+            return
             
-        max_lines = height - start_y
+        # Calculate visible range
+        max_lines = height - start_y - 1
         start_line = max(0, len(output_lines) - max_lines)
         
-        view_header = f"=== {process_name.upper()} OUTPUT ==="
+        # Draw header
+        view_header = f"=== {'DEBUG' if process_name == 'debug' else 'SCREENSHOT'} LOG ==="
         view_color = self.get_view_color(process_name)
         stdscr.addstr(4, (width - len(view_header)) // 2, view_header, 
                      view_color | curses.A_BOLD)
         
+        # Draw output lines
         current_y = start_y
         for line in output_lines[start_line:]:
             if current_y >= height - 1:
                 break
                 
             try:
-                clean_line = self.strip_ansi(line)
-                if not clean_line:
-                    current_y += 1
-                    continue
+                # Parse line components (timestamp, emoji, message, level)
+                parts = line.split(" ", 3)
+                if len(parts) == 4:
+                    timestamp, emoji, message, level = parts
+                    level = level.strip("()")
                     
-                if process_name == "socket":
-                    # Match timestamp, emoji, title, and type pattern
-                    title_match = re.match(r'^(\d{2}:\d{2}:\d{2}) ([^\s]+) ([^(]+) \(([^)]+)\)', clean_line)
-                    if title_match:
-                        timestamp, emoji, title, msg_type = title_match.groups()
-                        x = 0
-                        # Print timestamp
-                        stdscr.addstr(current_y, x, timestamp)
-                        x += len(timestamp) + 1
-                        # Print emoji
-                        stdscr.addstr(current_y, x, emoji)
-                        x += len(emoji) + 1
-                        # Print title in socket color
-                        stdscr.addstr(current_y, x, title.strip(), self.get_view_color("socket") | curses.A_BOLD)
-                        x += len(title) + 1
-                        # Print type with appropriate color
-                        type_color = {
-                            'info': curses.color_pair(MENU_PAIR),
-                            'prime': curses.color_pair(SELECTED_VIEW),
-                            'warning': curses.color_pair(STATUS_STOPPED)
-                        }.get(msg_type.lower(), curses.A_NORMAL)
-                        stdscr.addstr(current_y, x, f"({msg_type})", type_color)
-                    else:
-                        # Print normal line
-                        stdscr.addstr(current_y, 0, clean_line[:width-1])
+                    # Draw timestamp
+                    x = 2
+                    stdscr.addstr(current_y, x, timestamp)
+                    x += len(timestamp) + 1
+                    
+                    # Draw emoji
+                    stdscr.addstr(current_y, x, emoji)
+                    x += len(emoji) + 1
+                    
+                    # Draw message with appropriate color
+                    msg_color = {
+                        'info': curses.color_pair(MENU_PAIR),
+                        'prime': curses.color_pair(SELECTED_VIEW),
+                        'warning': curses.color_pair(STATUS_STOPPED),
+                        'error': curses.color_pair(STATUS_STOPPED) | curses.A_BOLD
+                    }.get(level.lower(), curses.A_NORMAL)
+                    
+                    stdscr.addstr(current_y, x, message, msg_color)
                 else:
-                    stdscr.addstr(current_y, 0, clean_line[:width-1])
+                    stdscr.addstr(current_y, 2, line[:width-3])
+                    
                 current_y += 1
+                
             except curses.error:
-                pass
+                break
+
+    def draw_status_view(self, stdscr):
+        """Draw the status view showing connection information"""
+        height, width = stdscr.getmaxyx()
+        
+        # Header
+        header = "=== STATUS VIEW ==="
+        view_color = self.get_view_color("status")
+        stdscr.addstr(4, (width - len(header)) // 2, header, view_color | curses.A_BOLD)
+        
+        # Socket Server Status
+        socket_running = self.process_manager.is_process_running("socket")
+        status_color = curses.color_pair(STATUS_RUNNING if socket_running else STATUS_STOPPED)
+        status_text = "RUNNING" if socket_running else "STOPPED"
+        
+        stdscr.addstr(6, 2, "SocketIO Server: ", view_color)
+        stdscr.addstr(status_text, status_color | curses.A_BOLD)
+        
+        # Screenshot Service Status
+        screenshot_running = self.process_manager.is_process_running("screenshot")
+        screenshot_status = "RUNNING" if screenshot_running else "STOPPED"
+        screenshot_color = curses.color_pair(STATUS_RUNNING if screenshot_running else STATUS_STOPPED)
+        
+        stdscr.addstr(7, 2, "Screenshot Service: ", view_color)
+        stdscr.addstr(screenshot_status, screenshot_color | curses.A_BOLD)
+        
+        # iOS Connections with icon
+        ios_clients = self.process_manager.get_ios_client_count()
+        ios_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
+        ios_icon = "📱" if ios_clients > 0 else "❌"
+        
+        stdscr.addstr(9, 2, "Connected iOS Clients: ", view_color)
+        stdscr.addstr(f"{ios_icon} {ios_clients}", ios_color | curses.A_BOLD)
+        
+        # Server Info
+        if socket_running:
+            config = self.process_manager.config["server"]
+            stdscr.addstr(11, 2, "Server Configuration:", view_color | curses.A_BOLD)
+            stdscr.addstr(12, 4, f"Address: {config['host']}:{config['port']}", view_color)
+            stdscr.addstr(13, 4, f"Room: {config['room']}", view_color)
+            stdscr.addstr(14, 4, f"CORS: {config['cors_origins']}", view_color)
+        
+        # Controls
+        controls = "[R]estart Server  [S]top/Start Server  [?]Help"
+        stdscr.addstr(height-2, 2, controls, curses.color_pair(MENU_PAIR))
+
+    def draw_screenshot_controls(self, stdscr, start_y):
+        """Draw screenshot service controls"""
+        try:
+            width = stdscr.getmaxyx()[1]
+            
+            # Service status
+            pause_file = os.path.join(get_temp_dir(), "signal_pause_capture")
+            status = "PAUSED" if os.path.exists(pause_file) else "RUNNING"
+            status_color = curses.color_pair(STATUS_STOPPED if status == "PAUSED" else STATUS_RUNNING)
+            status_icon = "⏸️ " if status == "PAUSED" else "▶️ "
+            
+            stdscr.addstr(start_y, 2, f"Status: ", self.get_view_color("screenshot"))
+            stdscr.addstr(f"{status_icon}{status}", status_color | curses.A_BOLD)
+
+            # Draw frequency control with visual indicator
+            freq = self.current_frequency
+            freq_width = int((freq / 10.0) * 20)  # Scale to 20 chars max
+            freq_bar = "▍" * freq_width + "░" * (20 - freq_width)
+            
+            stdscr.addstr(start_y + 1, 2, "Frequency: ", self.get_view_color("screenshot"))
+            stdscr.addstr(freq_bar, self.get_view_color("screenshot") | curses.A_BOLD)
+            stdscr.addstr(f" {freq:.1f}s", self.get_view_color("screenshot"))
+            
+            # Draw controls help with icons
+            controls = "⌨️  Space:Pause  ◀️ ▶️ :Adjust  ⚡️F:Set  📂O:Open  ❔?:Help"
+            stdscr.addstr(start_y + 2, 2, controls, curses.color_pair(MENU_PAIR))
+            
+            # Separator line
+            stdscr.addstr(start_y + 3, 0, "=" * width, curses.color_pair(HEADER_PAIR))
+            
+        except curses.error:
+            pass
+
+    def draw_debug_controls(self, stdscr, start_y):
+        """Draw debug view controls"""
+        try:
+            width = stdscr.getmaxyx()[1]
+            
+            # iOS Connection Status
+            ios_clients = self.process_manager.get_ios_client_count()
+            status_icon = "📱" if ios_clients > 0 else "❌"
+            status_text = f"{status_icon} {ios_clients} iOS client{'s' if ios_clients != 1 else ''}"
+            status_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
+            
+            # Draw controls
+            controls = "📝P:Post Message  🔄R:Clear  ❔?:Help"
+            status_x = width - len(status_text) - 2
+            
+            stdscr.addstr(start_y, 2, controls, curses.color_pair(MENU_PAIR))
+            if status_x > len(controls) + 4:
+                stdscr.addstr(start_y, status_x, status_text, status_color | curses.A_BOLD)
+            
+            stdscr.addstr(start_y + 1, 0, "=" * width, curses.color_pair(HEADER_PAIR))
+            
+        except curses.error:
+            pass
 
     def draw_main_view(self, stdscr):
         """Draw the main process status view"""
@@ -207,7 +308,7 @@ class TerminalUI:
         
         # Add a colored header for the main view
         view_header = "=== PROCESS STATUS ==="
-        view_color = self.get_view_color("main")
+        view_color = self.get_view_color("status")
         stdscr.addstr(4, (width - len(view_header)) // 2, view_header, 
                      view_color | curses.A_BOLD)
         
@@ -220,6 +321,15 @@ class TerminalUI:
                 stdscr.addstr(status, status_color | curses.A_BOLD)
             except curses.error:
                 pass
+                
+        # Draw iOS connection status in main view
+        ios_clients = self.process_manager.get_ios_client_count()
+        ios_status = f"iOS Clients Connected: {ios_clients}"
+        ios_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
+        try:
+            stdscr.addstr(10, 2, ios_status, ios_color | curses.A_BOLD)
+        except curses.error:
+            pass
 
     def load_screenshot_frequency(self):
         """Load the screenshot frequency from config file"""
@@ -259,32 +369,6 @@ class TerminalUI:
                 os.rmdir(resume_file)
             os.makedirs(pause_file)
 
-    def draw_screenshot_controls(self, stdscr, start_y):
-        """Draw screenshot service controls"""
-        try:
-            width = stdscr.getmaxyx()[1]
-            # Draw pause/resume status
-            pause_file = os.path.join(get_temp_dir(), "signal_pause_capture")
-            status = "PAUSED" if os.path.exists(pause_file) else "RUNNING"
-            status_color = curses.color_pair(STATUS_STOPPED if status == "PAUSED" else STATUS_RUNNING)
-            stdscr.addstr(start_y, 2, f"Status: ", self.get_view_color("screenshot"))
-            stdscr.addstr(status, status_color | curses.A_BOLD)
-
-            # Draw frequency control
-            freq_width = int((self.current_frequency / 10) * 20)
-            freq_bar = "| " + "-" * freq_width + str(self.current_frequency) + "-" * (20 - freq_width) + " |"
-            stdscr.addstr(start_y + 1, 2, "Frequency: ", self.get_view_color("screenshot"))
-            stdscr.addstr(freq_bar, self.get_view_color("screenshot") | curses.A_BOLD)
-            
-            # Draw controls help
-            controls = "[Space]Pause [←/→]Adjust [F]Set [O]pen Folder [?]Help"
-            stdscr.addstr(start_y + 2, 2, controls, curses.color_pair(MENU_PAIR))
-            
-            # Separator line
-            stdscr.addstr(start_y + 3, 0, "=" * width, curses.color_pair(HEADER_PAIR))
-        except curses.error:
-            pass
-
     def draw_process_controls(self, stdscr, start_y):
         """Draw process service controls"""
         try:
@@ -306,8 +390,20 @@ class TerminalUI:
         """Draw socket service controls"""
         try:
             width = stdscr.getmaxyx()[1]
+            
+            # Display connection status in the control bar
+            ios_clients = self.process_manager.get_ios_client_count()
+            status_text = f"iOS: {ios_clients} connected"
+            status_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
+            
             controls = "[P]ost Message [?]Help"
             stdscr.addstr(start_y, 2, controls, curses.color_pair(MENU_PAIR))
+            
+            # Position the status on the right side of the screen
+            status_x = width - len(status_text) - 2
+            if status_x > len(controls) + 5:  # Ensure there's space
+                stdscr.addstr(start_y, status_x, status_text, status_color | curses.A_BOLD)
+            
             stdscr.addstr(start_y + 1, 0, "=" * width, curses.color_pair(HEADER_PAIR))
         except curses.error:
             pass
@@ -316,57 +412,70 @@ class TerminalUI:
         """Draw the help screen for the current view"""
         height, width = stdscr.getmaxyx()
         help_texts = {
-            "main": [
-                "Main View Help",
+            "status": [
+                "Status View Help",
                 "",
-                "1-4: Switch between views",
+                "This view shows the current state of all services and connections.",
+                "",
+                "Controls:",
+                "1-3: Switch between views",
+                "R: Restart SocketIO server",
+                "S: Toggle server (start/stop)",
                 "Q: Quit application",
-                "R: Restart current service",
                 "ESC: Close help",
-                "?: Show this help"
+                "?: Show this help",
+                "",
+                "Status Icons:",
+                "📱 Connected iOS client",
+                "❌ No iOS clients connected",
+                "✅ Service running",
+                "❌ Service stopped"
             ],
             "screenshot": [
                 "Screenshot View Help",
                 "",
-                "This view manages the automatic screenshot capture service that monitors",
-                "your screen for coding challenges. Screenshots are automatically captured",
-                "at regular intervals and sent to the process server for OCR analysis.",
+                "This view manages the automatic screenshot capture service.",
+                "Screenshots are taken at regular intervals and automatically",
+                "cleaned up when older than 3 minutes.",
                 "",
-                "Space: Pause/Resume screenshot capture",
-                "Left/Right: Adjust frequency by 0.5s (saves automatically)",
-                "F: Enter new frequency value",
-                "O: Open screenshots folder",
+                "Controls:",
+                "⌨️  Space: Pause/Resume screenshot capture",
+                "◀️ ▶️ : Adjust frequency by 0.5s",
+                "⚡️ F: Set exact frequency (0.5-10s)",
+                "📂 O: Open screenshots folder",
                 "ESC: Close help",
-                "?: Show this help"
+                "?: Show this help",
+                "",
+                "Status Icons:",
+                "▶️  Capture running",
+                "⏸️  Capture paused",
+                "📸 Screenshot taken",
+                "🗑️  Old screenshots cleaned"
             ],
-            "process": [
-                "Process View Help",
+            "debug": [
+                "Debug View Help",
                 "",
-                "This view shows the processing of screenshots through OCR and AI analysis.",
-                "Screenshots are processed and OCR text is sent to the iOS app via SocketIO.",
+                "This view shows filtered SocketIO messages and allows sending",
+                "custom messages to connected iOS clients.",
                 "",
-                "T: Trigger processing of latest screenshot (30s cooldown)",
-                "R: Restart process service",
-                "ESC: Close help",
-                "?: Show this help"
-            ],
-            "socket": [
-                "Socket View Help",
+                "Controls:",
+                "📝 P: Post new message",
+                "🔄 R: Clear message history",
+                "ESC: Close help/message form",
+                "?: Show this help",
                 "",
-                "This view shows messages and allows sending manual messages.",
+                "Message Types & Icons:",
+                "📱 Info - Basic information (blue)",
+                "✨ Prime - Important events (magenta)",
+                "⚠️  Warning - Issues/errors (yellow)",
                 "",
-                "P: Post a new message - opens a form where you can set:",
-                "   • Title: The message header (shown in Socket theme color)",
-                "   • Type: Info (blue), Prime (magenta), or Warning (yellow)",
-                "   • Message: The content to send",
-                "",
-                "R: Restart socket service",
-                "ESC: Close help/form",
-                "?: Show this help"
+                "Notes:",
+                "• Ping/pong messages are filtered out",
+                "• Client connections are shown in status bar",
+                "• Messages show timestamp and type"
             ]
         }
-
-        texts = help_texts.get(self.current_view, help_texts["main"])
+        texts = help_texts.get(self.current_view, help_texts["status"])
         box_height = len(texts) + 4
         box_width = max(len(line) for line in texts) + 4
         start_y = (height - box_height) // 2
@@ -385,8 +494,15 @@ class TerminalUI:
         # Draw text
         for i, text in enumerate(texts):
             try:
-                stdscr.addstr(start_y + i + 2, start_x + 2, text, 
-                            self.get_view_color(self.current_view))
+                if ":" in text and not text.startswith(" "):
+                    # Make headers bold
+                    header, content = text.split(":", 1)
+                    stdscr.addstr(start_y + i + 2, start_x + 2, header + ":",
+                                self.get_view_color(self.current_view) | curses.A_BOLD)
+                    stdscr.addstr(content, self.get_view_color(self.current_view))
+                else:
+                    stdscr.addstr(start_y + i + 2, start_x + 2, text,
+                                self.get_view_color(self.current_view))
             except curses.error:
                 pass
 
@@ -470,7 +586,7 @@ class TerminalUI:
                 
                 if "options" in field:
                     value_text = f"< {field['value']} >"
-                    color = self.get_view_color("socket") if field['value'] == "Info" else \
+                    color = self.get_view_color("debug") if field['value'] == "Info" else \
                            curses.color_pair(STATUS_RUNNING) if field['value'] == "Prime" else \
                            curses.color_pair(STATUS_STOPPED)
                     win.addstr(y, len(label) + 2, value_text, attr | color)
@@ -508,16 +624,16 @@ class TerminalUI:
                     current_idx = options.index(fields[current_field]["value"])
                     fields[current_field]["value"] = options[(current_idx + 1) % len(options)]
             elif ch in (8, 127, curses.KEY_BACKSPACE):  # Backspace
-                if not "options" in fields[current_field]:
+                if "options" not in fields[current_field]:
                     fields[current_field]["value"] = fields[current_field]["value"][:-1]
             elif ch >= 32 and ch <= 126:  # Printable characters
-                if not "options" in fields[current_field]:
-                    if len(fields[current_field]["value"]) < fields[current_field]["length"]:
-                        fields[current_field]["value"] += chr(ch)
+                if "options" not in fields[current_field] and len(fields[current_field]["value"]) < fields[current_field]["length"]:
+                    fields[current_field]["value"] += chr(ch)
 
     def run(self, stdscr):
         """Main UI loop"""
         curses.mousemask(curses.REPORT_MOUSE_POSITION)
+        self.stdscr = stdscr
         self.setup_colors()
         stdscr.timeout(100)
 
@@ -527,14 +643,12 @@ class TerminalUI:
 
             if self.help_active:
                 self.draw_help_screen(stdscr)
-            elif self.current_view == "main":
-                self.draw_main_view(stdscr)
+            elif self.current_view == "status":
+                self.draw_status_view(stdscr)
             elif self.current_view == "screenshot":
                 self.draw_process_output(stdscr, "screenshot")
-            elif self.current_view == "process":
-                self.draw_process_output(stdscr, "process")
-            elif self.current_view == "socket":
-                self.draw_process_output(stdscr, "socket")
+            elif self.current_view == "debug":
+                self.draw_process_output(stdscr, "debug")
 
             stdscr.refresh()
 
@@ -562,18 +676,23 @@ class TerminalUI:
             return False
         elif key == ord('r'):
             self.process_manager.restart_service(self.current_view)
-        elif key in (ord('1'), ord('2'), ord('3'), ord('4')):
+        elif key == ord('s') and self.current_view == "status":
+            # Toggle the currently selected service
+            service = "socket"  # Default to socket service
+            running = self.process_manager.is_process_running(service)
+            if running:
+                self.process_manager.stop_service(service)
+            else:
+                self.process_manager.start_service(service)
+        elif key in (ord('1'), ord('2'), ord('3')):
             self.current_view = {
-                ord('1'): "main",
+                ord('1'): "status",
                 ord('2'): "screenshot",
-                ord('3'): "process",
-                ord('4'): "socket"
+                ord('3'): "debug"
             }[key]
         elif self.current_view == "screenshot":
             self.handle_screenshot_input(key)
-        elif self.current_view == "process":
-            self.handle_process_input(key)
-        elif self.current_view == "socket":
+        elif self.current_view == "debug":
             self.handle_socket_input(key)
         
         return True
@@ -608,3 +727,5 @@ class TerminalUI:
         """Handle input specific to socket view"""
         if key == ord('p'):  # Post message
             self.post_message_active = True
+        elif key == ord('r'):  # Clear messages
+            self.process_manager.clear_output("debug")

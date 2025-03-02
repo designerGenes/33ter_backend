@@ -7,10 +7,9 @@ import os
 import sys
 import logging
 import argparse
-from datetime import datetime
 import socketio
-from utils import get_server_config
-from utils import get_logs_dir
+from datetime import datetime
+from utils import get_server_config, get_logs_dir
 from core.screenshot_manager import ScreenshotManager
 
 def setup_logging(log_level: str = "INFO"):
@@ -33,8 +32,8 @@ class ScreenshotClient:
         self.config = get_server_config()
         self.logger = setup_logging(self.config['server']['log_level'])
         
-        # Initialize Socket.IO client
-        self.sio = socketio.Client(logger=True, engineio_logger=True)
+        # Initialize Socket.IO client with reduced logging
+        self.sio = socketio.Client(logger=False, engineio_logger=False)
         self.setup_handlers()
         
         # Initialize screenshot manager
@@ -57,15 +56,24 @@ class ScreenshotClient:
             self.screenshot_manager.stop_capturing()
         
         @self.sio.on('trigger_ocr')
-        def on_trigger_ocr():
-            self.logger.info("OCR trigger received")
+        def on_trigger_ocr(data):
+            self.logger.info("OCR trigger received from iOS client")
             self.process_latest_screenshot()
+            
+        @self.sio.on('client_count')
+        def on_client_count(data):
+            count = data.get('count', 0)
+            self.logger.info(f"iOS clients connected: {count}")
     
     def connect_to_server(self):
         """Connect to the Socket.IO server."""
         server_url = f"http://{self.config['server']['host']}:{self.config['server']['port']}"
         try:
-            self.sio.connect(server_url)
+            # Set user agent to identify as Python client
+            headers = {
+                'User-Agent': 'Python/33ter-Client'
+            }
+            self.sio.connect(server_url, headers=headers)
             return True
         except Exception as e:
             self.logger.error(f"Failed to connect to server: {e}")
@@ -76,7 +84,11 @@ class ScreenshotClient:
         result = self.screenshot_manager.process_latest_screenshot()
         if result:
             try:
-                self.sio.emit('ocr_result', result)
+                # Send result in standardized format
+                self.sio.emit('ocr_result', [{
+                    'text': result,
+                    'timestamp': datetime.now().isoformat()
+                }])
                 self.logger.info("OCR result sent successfully")
             except Exception as e:
                 self.logger.error(f"Failed to send OCR result: {e}")
@@ -104,9 +116,8 @@ def main():
         # Keep the main thread running
         try:
             while True:
-                # Sleep briefly to prevent high CPU usage
                 import time
-                time.sleep(0.1)
+                time.sleep(0.1)  # Brief sleep to prevent high CPU usage
         except KeyboardInterrupt:
             client.logger.info("Shutdown requested by user")
         

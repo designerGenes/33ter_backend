@@ -1,7 +1,7 @@
 """OCR processing module for 33ter application."""
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytesseract
 from PIL import ImageGrab
 
@@ -62,7 +62,7 @@ class OCRProcessor:
             self.logger.error(f"Error getting latest screenshot: {e}")
             return None
 
-    def process_screenshot(self, filepath):
+    def process_image(self, filepath):
         """Process a screenshot with OCR."""
         try:
             # Extract text using Tesseract
@@ -72,21 +72,19 @@ class OCRProcessor:
                 self.logger.warning("No text found in screenshot")
                 return None
             
-            # Format OCR result
-            result = [{
-                'text': text.strip(),
-                'timestamp': datetime.now().isoformat()
-            }]
+            # Trim excessive whitespace while preserving newlines
+            text = '\n'.join(line.strip() for line in text.splitlines())
             
-            return result
+            return text
+            
         except Exception as e:
             self.logger.error(f"OCR processing failed: {e}")
             return None
 
     def cleanup_old_screenshots(self, max_age=180):
-        """Delete screenshots older than max_age seconds."""
+        """Delete screenshots older than max_age seconds. Returns number of files deleted."""
         try:
-            from datetime import datetime, timedelta
+            deleted_count = 0
             cutoff = datetime.now() - timedelta(seconds=max_age)
             
             for filename in os.listdir(self.screenshots_dir):
@@ -98,9 +96,14 @@ class OCRProcessor:
                 
                 if modified_time < cutoff:
                     os.remove(filepath)
+                    deleted_count += 1
                     self.logger.debug(f"Deleted old screenshot: {filename}")
+            
+            return deleted_count
+            
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
+            return 0
 
     def process_latest_screenshot(self):
         """Process the most recent screenshot and return results."""
@@ -109,4 +112,9 @@ class OCRProcessor:
             self.logger.error("No screenshots available")
             return None
             
-        return self.process_screenshot(latest)
+        text = self.process_image(latest)
+        if not text:
+            return None
+            
+        self.logger.info(f"OCR extracted {len(text)} characters from {os.path.basename(latest)}")
+        return text
