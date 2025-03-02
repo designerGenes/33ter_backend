@@ -1,188 +1,133 @@
-import subprocess
-import sys
+"""System check utilities for 33ter application."""
 import os
-import platform
+import sys
 import shutil
-from typing import Tuple, List, Dict, Optional
-
-def get_linux_distribution() -> Optional[str]:
-    """Detect Linux distribution."""
-    try:
-        with open('/etc/os-release') as f:
-            lines = f.readlines()
-            info = dict(line.strip().split('=', 1) for line in lines if '=' in line)
-            return info.get('ID', '').strip('"')
-    except:
-        return None
-
-def get_package_manager() -> Optional[Dict[str, str]]:
-    """Detect available package manager and return commands."""
-    if platform.system() == 'Darwin':
-        if shutil.which('brew'):
-            return {
-                'install': 'brew install',
-                'update': 'brew update',
-                'name': 'Homebrew'
-            }
-    elif platform.system() == 'Linux':
-        distro = get_linux_distribution()
-        if distro in ['ubuntu', 'debian', 'pop', 'mint']:
-            return {
-                'install': 'sudo apt-get install',
-                'update': 'sudo apt-get update',
-                'name': 'apt'
-            }
-        elif distro in ['fedora', 'rhel', 'centos']:
-            return {
-                'install': 'sudo dnf install',
-                'update': 'sudo dnf update',
-                'name': 'dnf'
-            }
-        elif distro == 'arch':
-            return {
-                'install': 'sudo pacman -S',
-                'update': 'sudo pacman -Syu',
-                'name': 'pacman'
-            }
-        elif shutil.which('apk'):  # Alpine Linux
-            return {
-                'install': 'sudo apk add',
-                'update': 'sudo apk update',
-                'name': 'apk'
-            }
-    return None
+import platform
+import subprocess
+from typing import Dict, List, Tuple
 
 def check_python_version() -> Tuple[bool, str]:
     """Check if Python version meets requirements."""
     major, minor = sys.version_info[:2]
-    if major < 3 or (major == 3 and minor < 8):
-        return False, f"Python 3.8+ required, found {major}.{minor}"
-    return True, f"Python version {major}.{minor} OK"
+    required = (3, 9)
+    if (major, minor) >= required:
+        return True, f"Python {major}.{minor} (✓)"
+    return False, f"Python {major}.{minor} (✗) - Requires 3.9+"
 
-def check_pip() -> Tuple[bool, str]:
-    """Check if pip is installed and install if missing."""
-    try:
-        subprocess.run([sys.executable, "-m", "pip", "--version"], 
-                      capture_output=True, check=True)
-        return True, "pip is installed"
-    except subprocess.CalledProcessError:
-        print("pip not found, attempting to install...")
+def check_tesseract() -> Tuple[bool, str]:
+    """Check if Tesseract OCR is installed."""
+    tesseract_path = shutil.which('tesseract')
+    if tesseract_path:
         try:
-            # Download get-pip.py
-            subprocess.run(["curl", "https://bootstrap.pypa.io/get-pip.py", "-o", "get-pip.py"], 
-                         check=True)
-            # Install pip
-            subprocess.run([sys.executable, "get-pip.py", "--user"], check=True)
-            # Clean up
-            os.remove("get-pip.py")
-            return True, "pip successfully installed"
-        except Exception as e:
-            return False, f"Failed to install pip: {e}"
+            version = subprocess.check_output([tesseract_path, '--version'], 
+                                           stderr=subprocess.STDOUT,
+                                           text=True).split()[1]
+            return True, f"Tesseract {version} (✓)"
+        except:
+            return True, "Tesseract installed (✓)"
+    return False, "Tesseract not found (✗)"
 
-def check_venv_module() -> Tuple[bool, str]:
-    """Check if venv module is available and install if missing."""
+def check_opencv() -> Tuple[bool, str]:
+    """Check if OpenCV is available."""
     try:
-        import venv
-        return True, "venv module is available"
+        import cv2
+        version = cv2.__version__
+        return True, f"OpenCV {version} (✓)"
     except ImportError:
-        print("venv module not found, attempting to install...")
-        try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "virtualenv"], 
-                         check=True)
-            return True, "virtualenv installed as fallback"
-        except Exception as e:
-            return False, f"Failed to install virtualenv: {e}"
+        return False, "OpenCV not found (✗)"
 
-def check_gui_dependencies() -> List[Tuple[bool, str]]:
-    """Check GUI-related dependencies (for pyautogui)."""
-    checks = []
+def check_socketio() -> Tuple[bool, str]:
+    """Check if Socket.IO is available."""
+    try:
+        import socketio
+        version = socketio.__version__
+        return True, f"Socket.IO {version} (✓)"
+    except ImportError:
+        return False, "Socket.IO not found (✗)"
+
+def check_directories() -> List[Tuple[str, bool, str]]:
+    """Check required directories exist and are writable."""
+    from utils.path_config import (
+        get_app_root,
+        get_screenshots_dir,
+        get_logs_dir,
+        get_temp_dir,
+        get_config_dir
+    )
     
-    if platform.system() == 'Linux':
-        pkg_mgr = get_package_manager()
-        if not pkg_mgr:
-            return [(False, "Unsupported Linux distribution")]
-
-        # Check for X11/Wayland
-        display = os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')
-        if not display:
-            checks.append((False, "No display server detected (X11/Wayland)"))
-        else:
-            checks.append((True, f"Display server detected: {display}"))
-
-        # Check Tkinter
-        try:
-            import tkinter
-            checks.append(("Tkinter", (True, "Tkinter is installed")))
-        except ImportError:
-            msg = f"Missing Tkinter. Install using: {pkg_mgr['install']} "
-            if pkg_mgr['name'] == 'apt':
-                msg += "python3-tk"
-            elif pkg_mgr['name'] == 'dnf':
-                msg += "python3-tkinter"
-            elif pkg_mgr['name'] == 'pacman':
-                msg += "tk"
-            elif pkg_mgr['name'] == 'apk':
-                msg += "py3-tkinter"
-            checks.append(("Tkinter", (False, msg)))
-
-        # Check for Scrot (screenshot tool)
-        if not shutil.which('scrot'):
-            msg = f"Missing scrot. Install using: {pkg_mgr['install']} scrot"
-            checks.append(("Scrot", (False, msg)))
-        else:
-            checks.append(("Scrot", (True, "Scrot is installed")))
-
-    elif platform.system() == 'Darwin':
-        # macOS specific checks
-        try:
-            import Quartz
-            checks.append(("Quartz", (True, "Quartz is available")))
-        except ImportError:
-            checks.append(("Quartz", (False, "Install pyobjc-framework-Quartz for better screenshot support")))
-
-    return checks
-
-def check_system_dependencies() -> List[Tuple[str, Tuple[bool, str]]]:
-    """Check all system dependencies and return status list."""
-    checks = [
-        ("Python Version", check_python_version()),
-        ("pip", check_pip()),
-        ("venv", check_venv_module())
+    dirs = [
+        ("App Root", get_app_root()),
+        ("Config", get_config_dir()),
+        ("Screenshots", get_screenshots_dir()),
+        ("Logs", get_logs_dir()),
+        ("Temp", get_temp_dir())
     ]
     
-    # Get system info
-    system = platform.system()
-    if system == "Linux":
-        distro = get_linux_distribution()
-        pkg_mgr = get_package_manager()
-        if pkg_mgr:
-            checks.append(("Package Manager", (True, f"Using {pkg_mgr['name']}")))
-        else:
-            checks.append(("Package Manager", (False, "No supported package manager found")))
+    results = []
+    for name, path in dirs:
+        exists = os.path.exists(path)
+        writable = os.access(path, os.W_OK) if exists else False
+        status = "(✓)" if exists and writable else "(✗)"
+        results.append((name, exists and writable, f"{path} {status}"))
     
-    # Add GUI dependency checks
-    checks.extend(check_gui_dependencies())
-            
-    return checks
+    return results
 
 def print_system_status():
-    """Print basic system information and requirements check."""
-    print("\n=== System Check ===")
+    """Print a formatted report of system status."""
+    # Get terminal width
+    try:
+        width = os.get_terminal_size().columns
+    except:
+        width = 80
     
-    # Check Python version
-    python_version = sys.version.split()[0]
-    print(f"Python Version: {python_version}")
-    if tuple(map(int, python_version.split('.'))) < (3, 9):
-        print("Warning: Python 3.9 or higher recommended")
+    # Print header
+    print("=" * width)
+    print("33ter System Check".center(width))
+    print("=" * width)
     
-    # Check operating system
-    os_name = platform.system()
-    print(f"Operating System: {os_name}")
-    if os_name not in ['Darwin', 'Linux']:
-        print("Warning: This application is primarily tested on macOS and Linux")
+    # Check Python and core dependencies
+    checks = [
+        ("Python Version", check_python_version()),
+        ("Tesseract OCR", check_tesseract()),
+        ("OpenCV", check_opencv()),
+        ("Socket.IO", check_socketio())
+    ]
     
-    # Check for virtual environment
-    in_venv = sys.prefix != sys.base_prefix
-    print(f"Virtual Environment: {'Active' if in_venv else 'Not Active'}")
+    print("\nCore Dependencies:")
+    print("-" * width)
+    for name, (status, message) in checks:
+        print(f"{name:<15} {message}")
     
-    print("==================")
+    # Check directories
+    print("\nDirectory Access:")
+    print("-" * width)
+    for name, status, message in check_directories():
+        print(f"{name:<15} {message}")
+    
+    print("\nSystem Information:")
+    print("-" * width)
+    print(f"{'OS:':<15} {platform.system()} {platform.release()}")
+    print(f"{'Platform:':<15} {platform.platform()}")
+    print("=" * width)
+    print()
+    
+    # Check if any critical components are missing
+    critical_failures = [
+        not status for name, (status, msg) in checks
+        if name in ("Python Version", "Tesseract OCR")
+    ]
+    
+    dir_failures = [
+        not status for name, status, msg in check_directories()
+    ]
+    
+    if any(critical_failures) or any(dir_failures):
+        print("WARNING: Some critical components are missing or inaccessible!")
+        print("Please address the issues marked with (✗) above.")
+        print()
+        return False
+        
+    return True
+
+if __name__ == "__main__":
+    print_system_status()

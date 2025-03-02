@@ -12,11 +12,24 @@
         "processStream": {
             "port": 5347,
             "room": "33ter_room"
+        },
+        "socket": {
+            "port": 5348,
+            "room": "33ter_room"
+        },
+        "screenshot": {
+            "frequency": 4.0,
+            "max_age": 180
         }
     },
     "environment": {
         "venv_path": "venv",
         "log_dir": "logs",
         "screenshots_dir": "screenshots"
+    },
+    "logging": {
+        "level": "INFO",
+        "max_files": 5,
+        "max_size": "10M"
     }
 }

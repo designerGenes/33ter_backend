@@ -1,4 +1,5 @@
-name: 33ter
+version: '3.8'
+
 services:
   process-stream:
     
@@ -89,6 +90,41 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+
+  socketio-server:
+    container_name: 33ter-socketio-server
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.socketio
+    ports:
+      - "5348:5348"
+    volumes:
+      - ./server_config.json:/app/server_config.json
+    environment:
+      - RUN_MODE=docker
+      - ADVERTISE_IP=host.docker.internal
+    restart: unless-stopped
+    networks:
+      - 33ter-network
+
+  python-client:
+    container_name: 33ter-python-client
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.client
+    depends_on:
+      - socketio-server
+    volumes:
+      - ./screenshots:/app/screenshots
+      - ./logs:/app/logs
+      - ./.tmp:/app/.tmp
+    environment:
+      - RUN_MODE=docker
+      - LOG_LEVEL=INFO
+      - SOCKETIO_HOST=socketio-server
+    restart: unless-stopped
+    networks:
+      - 33ter-network
 
 networks:
   33ter-network:
