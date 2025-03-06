@@ -12,11 +12,11 @@ import logging
 from typing import Optional
 
 try:
-    from utils import print_system_status
-    from utils import get_logs_dir
-    from utils import config
-    from core.process_manager import ProcessManager
-    from core.terminal_ui import TerminalUI
+    from app.utils.system_check import print_system_status
+    from app.utils.path_config import get_logs_dir
+    from app.utils.config_loader import config
+    from app.core.process_manager import ProcessManager
+    from app.core.terminal_ui import TerminalUI
 except ImportError as e:
     print(f"Error importing required modules: {e}")
     print("Please ensure you're running from the correct directory and all dependencies are installed.")

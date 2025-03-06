@@ -1,6 +1,6 @@
-"""Core components for the 33ter application."""
+"""Core functionality for the 33ter Python application"""
 from .process_manager import ProcessManager
-from .screenshot_manager import ScreenshotManager
-from .ocr_processor import OCRProcessor
+from .screenshot_recorder import ScreenshotRecorder
+from .terminal_ui import TerminalUI
 
-__all__ = ['ProcessManager', 'ScreenshotManager', 'OCRProcessor']
+__all__ = ['ProcessManager', 'ScreenshotRecorder', 'TerminalUI']

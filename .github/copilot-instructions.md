@@ -17,8 +17,9 @@ An iOS app section
 and I say "Update the two sections of our app to communicate", you should interpret this to mean:
 "Do NOT change the python app's communication method.  DO change the iOS app to use SocketIO based on the configuration currently present in the python app."
 
-The current frozen list:
-- the Azure functions and their related Firebase/Firestore code
+### The current frozen list:
+1. the Azure functions and their related Firebase/Firestore code
+2. the "app" folder including our SocketIO server, our screenshot capturer, and our OCR processing
 
 ## Application Overview
 33ter is a mobile application that helps developers solve coding problems by capturing code snippets through OCR, processing them with AI, and presenting formatted solutions.
