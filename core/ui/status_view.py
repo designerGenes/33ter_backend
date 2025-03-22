@@ -10,14 +10,24 @@ class StatusView(BaseView):
 
     def draw_content(self):
         """Draw the status view content."""
-        self.draw_header("STATUS VIEW")
+        self.draw_header("SERVER STATUS")
+        
+        # Draw command bar immediately after header
+        command_bar = "[R]estart Server  [S]top/Start Server  [L]ogs  [C]lear"
+        self.draw_controls(command_bar, 6)
+        
+        # Draw separator
+        self.stdscr.addstr(7, 0, "=" * self.width, curses.color_pair(HEADER_PAIR))
+        
+        # Start content from line 8
+        y_pos = 8
         
         # Socket Server Status
         socket_running = self.process_manager.is_process_running("socket")
         status_color = curses.color_pair(STATUS_RUNNING if socket_running else STATUS_STOPPED)
         status_text = "RUNNING" if socket_running else "STOPPED"
         
-        self.stdscr.addstr(6, 2, "SocketIO Server: ", get_view_color("status"))
+        self.stdscr.addstr(8, 2, "SocketIO Server: ", get_view_color("status"))
         self.stdscr.addstr(status_text, status_color | curses.A_BOLD)
         
         # Screenshot Service Status
@@ -25,7 +35,7 @@ class StatusView(BaseView):
         screenshot_status = "RUNNING" if screenshot_running else "STOPPED"
         screenshot_color = curses.color_pair(STATUS_RUNNING if screenshot_running else STATUS_STOPPED)
         
-        self.stdscr.addstr(7, 2, "Screenshot Service: ", get_view_color("status"))
+        self.stdscr.addstr(9, 2, "Screenshot Service: ", get_view_color("status"))
         self.stdscr.addstr(screenshot_status, screenshot_color | curses.A_BOLD)
         
         # iOS Connections
@@ -33,15 +43,15 @@ class StatusView(BaseView):
         ios_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
         ios_icon = "📱" if ios_clients > 0 else "❌"
         
-        self.stdscr.addstr(9, 2, "Connected iOS Clients: ", get_view_color("status"))
+        self.stdscr.addstr(11, 2, "Connected iOS Clients: ", get_view_color("status"))
         self.stdscr.addstr(f"{ios_icon} {ios_clients}", ios_color | curses.A_BOLD)
         
         # Server Info
         if socket_running:
             config = self.process_manager.config["server"]
-            self.stdscr.addstr(11, 2, "Server Configuration:", get_view_color("status") | curses.A_BOLD)
-            self.stdscr.addstr(12, 4, f"Address: {config['host']}:{config['port']}", get_view_color("status"))
-            self.stdscr.addstr(13, 4, f"Room: {config['room']}", get_view_color("status"))
+            self.stdscr.addstr(13, 2, "Server Configuration:", get_view_color("status") | curses.A_BOLD)
+            self.stdscr.addstr(14, 4, f"Address: {config['host']}:{config['port']}", get_view_color("status"))
+            self.stdscr.addstr(15, 4, f"Room: {config['room']}", get_view_color("status"))
         
         # Controls
         self.draw_controls("[R]estart Server  [S]top/Start Server  [?]Help", self.height-2)

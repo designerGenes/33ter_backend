@@ -21,7 +21,7 @@ class DebugView(BaseView):
         status_text = f"📱 {ios_clients} iOS client{'s' if ios_clients != 1 else ''}"
         status_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
         
-        controls = "📝P:Post Message  🔄R:Clear  ❔?:Help"
+        controls = "📝P:Post  🎯T:Trigger  🔄R:Clear"
         status_x = self.width - len(status_text) - 2
         
         self.draw_controls(controls, 6)
@@ -72,19 +72,56 @@ class DebugView(BaseView):
             except curses.error:
                 break
 
+    def format_message(self, message):
+        """Format received socket message for display."""
+        if isinstance(message, str):  # Handle error messages
+            timestamp = time.strftime('%H:%M:%S')
+            return f"{timestamp} ❌ [error] {message} (error)"
+            
+        type_icons = {
+            "info": "ℹ️ ",
+            "warning": "⚠️ ",
+            "trigger": "🎯",
+            "ocrResult": "📝"
+        }
+        
+        msg_type = message.get('messageType', 'unknown')
+        msg_from = message.get('from', 'unknown')
+        value = message.get('value', '')
+        
+        # Format array values for ocrResult
+        if isinstance(value, list):
+            value = ', '.join(str(v) for v in value)
+            
+        icon = type_icons.get(msg_type, '❓')
+        timestamp = time.strftime('%H:%M:%S')
+        return f"{timestamp} {icon} [{msg_from}] {value} ({msg_type})"
+
     def handle_input(self, key):
         """Handle debug view specific input"""
+        if super().handle_input(key):  # Handle help overlay
+            return
+            
         if key == ord('p'):
             self.get_message_input()
         elif key == ord('r'):
             self.clear_messages()
+        elif key == ord('t'):
+            # Convert trigger message to match expected format
+            result = self.process_manager.post_message_to_socket(
+                message="trigger",
+                title="OCR Trigger",
+                msg_type="trigger"
+            )
+            if result:  # If error message returned
+                self.process_manager.output_queues["debug"].append(result)
 
     def get_message_input(self):
         """Get and send a new socket message."""
         height, width = self.height, self.width
         
-        # Create message form window
-        form_height = 8
+        # Increase form height and adjust layout
+        form_height = 9  # Increased to accommodate all fields properly
         form_width = 60
         win = curses.newwin(form_height, form_width, 
                            (height-form_height)//2, 
@@ -93,9 +130,10 @@ class DebugView(BaseView):
         win.box()
         
         fields = [
+            {"label": "Type", "value": "info", 
+             "options": ["info", "warning", "trigger", "ocrResult"]},
             {"label": "Title", "value": "", "length": 30},
-            {"label": "Type", "value": "Info", "options": ["Info", "Prime", "Warning"]},
-            {"label": "Message", "value": "", "length": 40}
+            {"label": "Value", "value": "", "length": 40}
         ]
         current_field = 0
         
@@ -113,13 +151,13 @@ class DebugView(BaseView):
                 
                 if "options" in field:
                     value_text = f"< {field['value']} >"
-                    color = get_view_color("debug") if field['value'] == "Info" else \
-                           curses.color_pair(STATUS_RUNNING if field['value'] == "Prime" else STATUS_STOPPED)
-                    win.addstr(y, len(field['label']) + 4, value_text, attr | color)
+                    icon = {"info": "ℹ️ ", "warning": "⚠️ ", 
+                           "trigger": "🎯", "ocrResult": "📝"}[field['value']]
+                    win.addstr(y, len(field['label']) + 4, f"{icon}{value_text}", attr)
                 else:
                     win.addstr(y, len(field['label']) + 4, field['value'], attr)
             
-            # Instructions
+            # Move instructions to actual bottom of form
             win.addstr(form_height-2, 2, 
                       "↑↓:Move  ←→:Change Type  Enter:Send  Esc:Cancel",
                       curses.color_pair(MENU_PAIR))
@@ -130,12 +168,15 @@ class DebugView(BaseView):
             if ch == 27:  # ESC
                 break
             elif ch == 10:  # Enter
-                if fields[0]['value'].strip() and fields[2]['value'].strip():
-                    self.process_manager.post_message_to_socket(
-                        fields[2]['value'],
-                        fields[0]['value'],
-                        fields[1]['value'].lower()
+                if fields[1]['value'].strip() and fields[2]['value'].strip():
+                    # Convert to ProcessManager expected format
+                    result = self.process_manager.post_message_to_socket(
+                        message=fields[2]['value'],
+                        title=fields[1]['value'],
+                        msg_type=fields[0]['value']
                     )
+                    if result:  # If error message returned
+                        self.process_manager.output_queues["debug"].append(result)
                     break
             elif ch == curses.KEY_UP:
                 current_field = (current_field - 1) % len(fields)
@@ -162,21 +203,28 @@ class DebugView(BaseView):
     def get_help_content(self):
         """Get help content for debug view."""
         return [
-            "This view shows SocketIO communication and allows",
-            "sending messages to connected iOS clients.",
+            "Debug View - SocketIO Communication Interface",
             "",
             "Controls:",
             "P: Post new message",
+            "T: Trigger OCR text extraction",
             "R: Clear message history",
+            "?: Show/hide this help",
             "",
             "Message Types:",
-            "📱 Info - Basic information",
-            "✨ Prime - Important events",
-            "⚠️  Warning - Potential issues",
-            "❌ Error - Problems/failures",
+            "ℹ️  Info - Basic information",
+            "🎯 Trigger - Request OCR processing",
+            "📝 OCR Result - Extracted text",
+            "⚠️  Warning - Alert message",
+            "",
+            "Message Format:",
+            "{",
+            "  messageType: info/warning/trigger/ocrResult",
+            "  from: localBackend/mobileApp",
+            "  value: message content",
+            "}",
             "",
             "Notes:",
-            "- Ping/pong messages are filtered",
-            "- iOS client count shown in status bar",
-            "- Messages show timestamp and type"
+            "- Messages show timestamp and source",
+            "- iOS client count shown in status"
         ]

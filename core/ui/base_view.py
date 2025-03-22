@@ -3,6 +3,7 @@ import curses
 import sys
 import importlib.util
 import os
+import time
 from abc import ABC, abstractmethod
 from .color_scheme import *
 
@@ -15,6 +16,8 @@ class BaseView(ABC):
         self.help_active = False
         self.show_help = False
         self.view_name = "base"
+        self.reload_feedback_time = 0
+        self.reload_feedback_duration = 0.5  # seconds
         
     def on_activate(self):
         """Called when view becomes active."""
@@ -76,6 +79,7 @@ class BaseView(ABC):
             self.stdscr.clear()
         self.draw_menu()
         self.draw_content()
+        self.draw_reload_feedback()
 
     @abstractmethod
     def draw_content(self):
@@ -85,11 +89,20 @@ class BaseView(ABC):
     def handle_input(self, key):
         """Handle common input across all views."""
         if key == ord('?'):
-            self.show_help = not self.show_help
+            self.help_active = not self.help_active
             return True
-        elif key == 18:  # Ctrl-R or Cmd-R (18 is ASCII for 'r' - 96)
-            self.reload_view()
-            return True
+        elif key == 18:  # Ctrl-R
+            try:
+                # First attempt ProcessManager notification
+                self.process_manager.reload_screen()
+                # Then do the actual code reload
+                self.reload_view()
+                # Set feedback time for visual indicator
+                self.reload_feedback_time = time.time()
+                return True
+            except Exception as e:
+                self.process_manager.get_output_queues()["debug"].append(
+                    f"Reload failed: {str(e)}")
         return False
 
     def reload_view(self):
@@ -192,3 +205,11 @@ class BaseView(ABC):
     def get_help_content(self):
         """Get the help screen content lines."""
         pass
+
+    def draw_reload_feedback(self):
+        """Draw reload feedback if recently reloaded."""
+        if time.time() - self.reload_feedback_time < self.reload_feedback_duration:
+            text = "⟳ Reloaded"
+            x = self.width - len(text) - 2
+            y = 0  # Top right corner
+            self.stdscr.addstr(y, x, text, curses.A_BOLD | curses.color_pair(STATUS_RUNNING))

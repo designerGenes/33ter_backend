@@ -306,3 +306,20 @@ class ProcessManager:
             error_msg = f"Failed to post message: {str(e)}"
             self.logger.error(error_msg)
             self._add_to_buffer("debug", error_msg, "error")
+
+    def reload_screen(self):
+        """Force a reload of the current view's code from disk."""
+        # Note: The actual reload happens in BaseView.reload_view()
+        # This just provides a success indicator and feedback
+        self.output_buffers["debug"].append("Reloading view from disk...")
+        return True
+
+    def get_output_queues(self):
+        """Access to output queues for reload feedback."""
+        if not hasattr(self, 'output_queues'):
+            self.output_queues = {
+                "status": [],
+                "debug": [],
+                "screenshot": []
+            }
+        return self.output_queues
