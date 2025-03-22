@@ -160,102 +160,171 @@ async def test_ocr_result_handling(connected_client, test_config):
 
 async def test_trigger_ocr(connected_client, test_config):
     """Test OCR trigger functionality."""
-    client = connected_client  # Changed from await connected_client.__anext__()
+    client = connected_client
     
-    trigger_received = False
+    trigger_event = asyncio.Event()
+    
     @client.on('trigger_ocr')
-    def on_trigger():
-        nonlocal trigger_received
-        trigger_received = True
+    def on_trigger(data=None):  # Add data parameter since server sends empty dict
+        nonlocal trigger_event
+        trigger_event.set()
     
-    # Join test room
-    await client.emit('join_room', {'room': test_config['server']['room']})
-    await asyncio.sleep(0.1)
-    
-    # Trigger OCR
-    await client.emit('trigger_ocr')
-    await asyncio.sleep(0.1)
-    
-    assert trigger_received
+    try:
+        # Join test room
+        join_received = asyncio.Event()
+        @client.on('message')
+        def on_message(data):
+            if data.get('type') == 'info':
+                join_received.set()
+                
+        await client.emit('join_room', {'room': test_config['server']['room']})
+        await asyncio.wait_for(join_received.wait(), timeout=SOCKET_TIMEOUT)
+        
+        # Trigger OCR and wait for response
+        await client.emit('trigger_ocr')
+        await asyncio.wait_for(trigger_event.wait(), timeout=SOCKET_TIMEOUT)
+        
+        assert trigger_event.is_set(), "Trigger OCR event not received"
+        
+    except asyncio.TimeoutError:
+        pytest.fail("Socket operation timed out")
+    finally:
+        if client.connected:
+            await client.disconnect()
 
 async def test_custom_message_handling(connected_client, test_config):
     """Test custom message handling."""
-    client = await connected_client.__anext__()
+    client = connected_client
     
+    message_event = asyncio.Event()
     received_messages = []
+    
     @client.on('message')
     def on_message(data):
+        print(f"Received message: {data}")  # Add debug logging
         received_messages.append(data)
+        message_event.set()
     
-    # Join test room
-    await client.emit('join_room', {'room': test_config['server']['room']})
-    await asyncio.sleep(0.1)
-    
-    # Send custom message
-    test_message = {
-        'type': 'custom',
-        'title': 'Test Title',
-        'message': 'Test Message',
-        'msg_type': 'info'
-    }
-    await client.emit('message', test_message)
-    await asyncio.sleep(0.1)
-    
-    # Verify message was received
-    assert any(msg == test_message for msg in received_messages)
+    try:
+        # Join test room and wait for welcome message
+        await client.emit('join_room', {'room': test_config['server']['room']})
+        await asyncio.wait_for(message_event.wait(), timeout=SOCKET_TIMEOUT * 2)
+        message_event.clear()
+        
+        # Wait a bit after joining room
+        await asyncio.sleep(0.1)
+        
+        # Send custom message
+        test_message = {
+            'type': 'custom',
+            'title': 'Test Title',
+            'message': 'Test Message',
+            'msg_type': 'info'
+        }
+        await client.emit('message', test_message)
+        
+        # Wait for response with increased timeout
+        try:
+            await asyncio.wait_for(message_event.wait(), timeout=SOCKET_TIMEOUT * 2)
+        except asyncio.TimeoutError:
+            print(f"Received messages so far: {received_messages}")  # Add debug logging
+            raise
+            
+        # Verify message was received and matches
+        assert any(msg == test_message for msg in received_messages), "Custom message not received correctly"
+        
+    except asyncio.TimeoutError:
+        pytest.fail("Socket operation timed out")
+    finally:
+        if client.connected:
+            await client.disconnect()
 
 async def test_invalid_room_join(connected_client):
     """Test handling of invalid room join attempts."""
-    client = await connected_client.__anext__()
+    client = connected_client
     
+    message_event = asyncio.Event()
     received_messages = []
+    
     @client.on('message')
     def on_message(data):
         received_messages.append(data)
+        message_event.set()
     
-    # Test with missing room field
-    await client.emit('join_room', {})
-    await asyncio.sleep(0.1)
-    
-    # Test with invalid data type
-    await client.emit('join_room', 'invalid')
-    await asyncio.sleep(0.1)
-    
-    # Test with empty room name
-    await client.emit('join_room', {'room': ''})
-    await asyncio.sleep(0.1)
-    
-    # No welcome messages should be received for invalid attempts
-    assert not any(
-        msg['type'] == 'info' and 'Connected to 33ter server' in msg.get('data', {}).get('message', '')
-        for msg in received_messages
-    )
+    try:
+        # Test with missing room field
+        await client.emit('join_room', {})
+        await asyncio.sleep(0.1)
+        
+        # Test with invalid data type
+        await client.emit('join_room', 'invalid')
+        await asyncio.sleep(0.1)
+        
+        # Test with empty room name
+        await client.emit('join_room', {'room': ''})
+        await asyncio.sleep(0.1)
+        
+        # No welcome messages should be received for invalid attempts
+        assert not any(
+            msg['type'] == 'info' and 'Connected to 33ter server' in msg.get('data', {}).get('message', '')
+            for msg in received_messages
+        ), "Received welcome message for invalid room join"
+        
+    finally:
+        if client.connected:
+            await client.disconnect()
 
-# Add test for concurrent room operations
-async def test_concurrent_room_joins(multi_clients, test_config):
+async def test_concurrent_room_joins(server_app, multi_clients, test_config):
     """Test concurrent room join operations."""
-    client1, client2 = await multi_clients.__anext__()
+    app, server_url = server_app
+    clients = await anext(multi_clients)
+    client1, client2 = clients
     
-    received_messages1 = []
-    received_messages2 = []
+    # Setup message events and handlers
+    messages1 = []
+    messages2 = []
+    events = [asyncio.Event(), asyncio.Event()]
     
     @client1.on('message')
     def on_message1(data):
-        received_messages1.append(data)
-        
+        messages1.append(data)
+        if data.get('type') == 'info':
+            events[0].set()
+            
     @client2.on('message')
     def on_message2(data):
-        received_messages2.append(data)
+        messages2.append(data)
+        if data.get('type') == 'info':
+            events[1].set()
     
-    # Join same room concurrently
-    await asyncio.gather(
-        client1.emit('join_room', {'room': test_config['server']['room']}),
-        client2.emit('join_room', {'room': test_config['server']['room']})
-    )
-    await asyncio.sleep(0.1)
-    
-    # Both clients should receive welcome messages
-    assert any('Connected to 33ter server' in msg.get('data', {}).get('message', '')
-              for msg in received_messages1)
-    assert any('Connected to 33ter server' in msg.get('data', {}).get('message', '')
-              for msg in received_messages2)
+    try:
+        # Connect both clients first
+        await asyncio.gather(
+            client1.connect(server_url),
+            client2.connect(server_url)
+        )
+        
+        # Join same room concurrently
+        await asyncio.gather(
+            client1.emit('join_room', {'room': test_config['server']['room']}),
+            client2.emit('join_room', {'room': test_config['server']['room']})
+        )
+        
+        # Wait for both welcome messages
+        await asyncio.wait_for(
+            asyncio.gather(events[0].wait(), events[1].wait()),
+            timeout=SOCKET_TIMEOUT
+        )
+        
+        # Verify both clients received welcome messages
+        assert any('Connected to 33ter server' in msg.get('data', {}).get('message', '')
+                  for msg in messages1), "Client 1 didn't receive welcome message"
+        assert any('Connected to 33ter server' in msg.get('data', {}).get('message', '')
+                  for msg in messages2), "Client 2 didn't receive welcome message"
+                  
+    except asyncio.TimeoutError:
+        pytest.fail("Socket operation timed out")
+    finally:
+        for client in [client1, client2]:
+            if client.connected:
+                await client.disconnect()

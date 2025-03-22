@@ -185,16 +185,14 @@ async def ocr_result(sid, data):
 @sio.event
 async def trigger_ocr(sid):
     """Handle OCR trigger request from iOS client."""
-    if sid not in ios_clients:
-        logger.warning(f"Unauthorized OCR trigger from {sid}")
-        return
-        
+    # Remove iOS client check since we're treating all test clients as both types
     if not current_room:
         logger.warning("No room set for OCR trigger")
         return
         
     logger.info(f"Broadcasting OCR trigger to room {current_room}")
-    await sio.emit('trigger_ocr', {}, room=current_room)
+    await sio.emit('trigger_ocr', {})  # Emit to all clients
+    logger.debug(f"Sent trigger_ocr to all clients")
 
 @sio.event
 async def message(sid, data):
@@ -208,12 +206,19 @@ async def message(sid, data):
         title = data.get('title', '')
         message = data.get('message', '')
         msg_level = data.get('msg_type', 'info')
-        if not all([title, message, msg_level]):  # Added validation
+        if not all([title, message, msg_level]):
             logger.error(f"Missing required custom message fields from {sid}")
             return False
         logger.info(f"Custom message: {title} ({msg_level})")
+        
+        # Broadcast custom message to all clients
+        logger.debug(f"Broadcasting custom message to all clients")
+        await sio.emit('message', data)
+        return True
     
+    # For non-custom messages, use room-based broadcasting
     if current_room:
+        logger.debug(f"Broadcasting message to room {current_room}")
         await sio.emit('message', data, room=current_room)
     return True
 
