@@ -3,6 +3,7 @@ import curses
 import time
 from .base_view import BaseView
 from .color_scheme import *
+import traceback
 
 class DebugView(BaseView):
     """Debug view for SocketIO messages and client communication."""
@@ -107,32 +108,44 @@ class DebugView(BaseView):
         elif key == ord('r'):
             self.clear_messages()
         elif key == ord('t'):
-            # Convert trigger message to match expected format
-            result = self.process_manager.post_message_to_socket(
-                message="trigger",
-                title="OCR Trigger",
-                msg_type="trigger"
-            )
-            if result:  # If error message returned
-                self.process_manager.output_queues["debug"].append(result)
+            try:
+                result = self.process_manager.post_message_to_socket(
+                    value="trigger",
+                    messageType="trigger"
+                )
+                
+                if result:  # Error message returned
+                    error_details = f"Trigger failed: {result}"
+                    if not self.process_manager.get_ios_client_count():
+                        error_details += "\nNote: No iOS clients are currently connected to receive the trigger"
+                    
+                    self.process_manager.output_buffers["debug"].append(error_details)
+                else:
+                    self.process_manager.output_buffers["debug"].append("Trigger message sent successfully")
+                    
+            except Exception as e:
+                error_msg = f"Unexpected error during trigger: {str(e)}\n"
+                error_msg += traceback.format_exc()
+                self.process_manager.output_buffers["debug"].append(error_msg)
 
     def get_message_input(self):
         """Get and send a new socket message."""
         height, width = self.height, self.width
         
-        # Increase form height and adjust layout
-        form_height = 9  # Increased to accommodate all fields properly
+        # Set proper form dimensions
+        form_height = 7
         form_width = 60
-        win = curses.newwin(form_height, form_width, 
-                           (height-form_height)//2, 
-                           (width-form_width)//2)
+        form_y = (height - form_height) // 2
+        form_x = (width - form_width) // 2
+        
+        # Create window with proper position and size
+        win = curses.newwin(form_height, form_width, form_y, form_x)
         win.keypad(1)
         win.box()
         
         fields = [
             {"label": "Type", "value": "info", 
              "options": ["info", "warning", "trigger", "ocrResult"]},
-            {"label": "Title", "value": "", "length": 30},
             {"label": "Value", "value": "", "length": 40}
         ]
         current_field = 0
@@ -142,10 +155,11 @@ class DebugView(BaseView):
             win.box()
             win.addstr(0, 2, " Socket Message ", curses.A_BOLD)
             
-            # Draw fields
+            # Draw fields (only two fields now)
             for i, field in enumerate(fields):
                 y = i * 2 + 1
-                win.addstr(y, 2, f"{field['label']}: ")
+                label = f"{field['label']}: "
+                win.addstr(y, 2, label)
                 
                 attr = curses.A_BOLD | curses.A_UNDERLINE if i == current_field else curses.A_NORMAL
                 
@@ -153,11 +167,11 @@ class DebugView(BaseView):
                     value_text = f"< {field['value']} >"
                     icon = {"info": "ℹ️ ", "warning": "⚠️ ", 
                            "trigger": "🎯", "ocrResult": "📝"}[field['value']]
-                    win.addstr(y, len(field['label']) + 4, f"{icon}{value_text}", attr)
+                    win.addstr(y, len(label) + 2, f"{icon}{value_text}", attr)
                 else:
-                    win.addstr(y, len(field['label']) + 4, field['value'], attr)
+                    win.addstr(y, len(label) + 2, field['value'], attr)
             
-            # Move instructions to actual bottom of form
+            # Draw instructions
             win.addstr(form_height-2, 2, 
                       "↑↓:Move  ←→:Change Type  Enter:Send  Esc:Cancel",
                       curses.color_pair(MENU_PAIR))
@@ -168,15 +182,13 @@ class DebugView(BaseView):
             if ch == 27:  # ESC
                 break
             elif ch == 10:  # Enter
-                if fields[1]['value'].strip() and fields[2]['value'].strip():
-                    # Convert to ProcessManager expected format
+                if fields[1]['value'].strip():  # Check value field is not empty
                     result = self.process_manager.post_message_to_socket(
-                        message=fields[2]['value'],
-                        title=fields[1]['value'],
-                        msg_type=fields[0]['value']
+                        value=fields[1]['value'],
+                        messageType=fields[0]['value']
                     )
-                    if result:  # If error message returned
-                        self.process_manager.output_queues["debug"].append(result)
+                    if result:  # Show error message if returned
+                        self.process_manager.output_buffers["debug"].append(result)
                     break
             elif ch == curses.KEY_UP:
                 current_field = (current_field - 1) % len(fields)

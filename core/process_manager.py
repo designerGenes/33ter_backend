@@ -277,35 +277,42 @@ class ProcessManager:
         """Get the number of connected iOS clients."""
         return self.ios_clients_connected
 
-    def post_message_to_socket(self, message, title, msg_type):
-        """Post a custom message to the SocketIO server."""
+    def post_message_to_socket(self, value: str, messageType: str):
+        """Post a message to the SocketIO server using standardized format."""
         if not self.socketio_client:
-            self._add_to_buffer("debug", "Cannot post message: SocketIO not connected", "warning")
-            return
+            error_msg = "SocketIO client not connected\n"
+            error_msg += "Debug info:\n"
+            error_msg += f"- Socket process running: {self.is_process_running('socket')}\n"
+            error_msg += f"- iOS clients connected: {self.ios_clients_connected}\n"
+            error_msg += "Suggestion: Use [R]estart Server in Status view to reconnect"
+            return error_msg
             
         try:
-            # Prepare message format
+            # Standardized message format
             formatted_message = {
-                "type": "custom",
-                "data": {  # Add data wrapper to match expected format
-                    "title": title,
-                    "message": message,
-                    "msg_type": msg_type,
-                    "timestamp": time.time()
-                }
+                "messageType": messageType,
+                "from": "localBackend",
+                "value": value
             }
             
             # Send to current room
             room = self.config['server']['room']
             self.socketio_client.emit('message', formatted_message, room=room)
             
-            # Add to debug output buffer with formatted display
-            self._add_to_buffer("debug", f"{title}: {message}", msg_type)
+            # Add success message to debug buffer
+            success_msg = f"Message sent ({messageType}): {value}"
+            self._add_to_buffer("debug", success_msg, messageType)
+            return None
             
         except Exception as e:
-            error_msg = f"Failed to post message: {str(e)}"
+            error_msg = f"Failed to send message: {str(e)}\n"
+            error_msg += "Debug info:\n"
+            if "not connected" in str(e).lower():
+                error_msg += "- Socket disconnected - try restarting the socket service\n"
+            error_msg += f"- Socket process running: {self.is_process_running('socket')}\n"
+            error_msg += f"- iOS clients connected: {self.ios_clients_connected}"
             self.logger.error(error_msg)
-            self._add_to_buffer("debug", error_msg, "error")
+            return error_msg
 
     def reload_screen(self):
         """Force a reload of the current view's code from disk."""
