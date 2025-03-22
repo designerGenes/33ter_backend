@@ -1,7 +1,24 @@
 #!/usr/bin/env python3
-"""
-33ter Socket.IO Client
-Handles communication between the Python screenshot/OCR service and the iOS app.
+"""33ter Socket.IO Client
+
+This module implements the Socket.IO client that connects to the 33ter server and manages
+screenshot processing and OCR text transmission. It handles connection management,
+screenshot triggers, and client status updates.
+
+Key Features:
+- Automatic server connection and reconnection
+- Screenshot capture management
+- OCR result transmission
+- Client count monitoring
+- Health check response handling
+
+#TODO:
+- Add connection retry with exponential backoff
+- Implement proper error recovery for failed transmissions
+- Add local caching of OCR results
+- Consider adding compression for large text transmissions
+- Add proper connection state management
+- Implement proper SSL/TLS certificate validation
 """
 import os
 import sys

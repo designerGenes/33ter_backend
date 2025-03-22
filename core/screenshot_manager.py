@@ -1,4 +1,15 @@
-"""Screenshot management module for 33ter application."""
+"""Screenshot management module for 33ter application.
+
+This module handles continuous screenshot capture and management using a dedicated thread.
+It maintains a configurable capture frequency and implements automatic cleanup of old files.
+
+#TODO:
+- Add memory management to prevent buffer overflow with high frequency captures
+- Implement proper thread shutdown on system signals
+- Add screenshot compression for long-term storage
+- Consider implementing a screenshot queue for high-load situations
+- Add disk space monitoring and automatic cleanup when space is low
+"""
 import os
 import time
 import json
@@ -10,7 +21,22 @@ from utils import get_config_dir, get_temp_dir, get_logs_dir
 from .ocr_processor import OCRProcessor
 
 class ScreenshotManager:
-    """Manages continuous screenshot capture and cleanup."""
+    """Manages continuous screenshot capture and cleanup.
+    
+    This class provides functionality for:
+    - Continuous screenshot capture in a background thread
+    - Configurable capture frequency
+    - Automatic cleanup of old screenshots
+    - Pause/resume capture functionality
+    - Real-time frequency adjustment
+    
+    #TODO:
+    - Implement thread pooling for parallel screenshot processing
+    - Add proper thread synchronization for shared resources
+    - Consider implementing a producer-consumer pattern
+    - Add health monitoring for the capture thread
+    - Implement proper error handling for disk full scenarios
+    """
     
     def __init__(self):
         self.ocr_processor = OCRProcessor()

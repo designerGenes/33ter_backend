@@ -1,7 +1,26 @@
 #!/usr/bin/env python3
+"""Configuration checker for the 33ter application.
+
+This module provides utilities for validating and troubleshooting configuration files
+and settings. It helps identify missing or invalid configuration entries and provides
+detailed feedback about the configuration state.
+
+Key Features:
+- Configuration path validation
+- JSON syntax validation
+- Required key verification
+- Configuration content display
+- Cross-reference validation
+
+#TODO:
+- Add configuration format versioning
+- Implement configuration dependency checking
+- Add value range validation
+- Consider adding configuration repair suggestions
+- Implement configuration backup before changes
+- Add configuration migration support
 """
-Configuration checker for the 33ter application.
-"""
+
 import os
 import sys
 import json

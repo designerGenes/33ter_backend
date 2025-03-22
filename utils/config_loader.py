@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
-"""
-Configuration loader for the 33ter application.
-Handles loading and managing configuration from multiple sources.
+"""Configuration loader for the 33ter application.
+
+This module provides a centralized configuration management system for the 33ter application.
+It handles loading, merging, and validating configurations from multiple sources, with support
+for default values and runtime updates.
+
+Key Features:
+- Hierarchical configuration management
+- Default configuration values
+- JSON file-based configuration
+- Deep merging of configuration updates
+- Configuration validation
+- Runtime configuration updates
+
+#TODO:
+- Add support for environment variable overrides
+- Implement configuration schema validation
+- Add support for hot reloading of configuration files
+- Consider adding encryption for sensitive configuration values
+- Implement configuration versioning and migration
+- Add configuration backup and restore functionality
 """
 import os
 import json

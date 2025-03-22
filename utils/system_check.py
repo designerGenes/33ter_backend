@@ -1,4 +1,26 @@
-"""System check utilities for 33ter application."""
+"""System check utilities for 33ter application.
+
+This module provides comprehensive system validation and requirement checking for the 33ter
+application. It ensures all required dependencies, directories, and configurations are
+available and properly set up before the application starts.
+
+Key Features:
+- Python version validation
+- Tesseract OCR installation check
+- OpenCV availability check
+- Socket.IO dependency validation
+- Directory permissions verification
+- System information reporting
+
+#TODO:
+- Add disk space verification for screenshot storage
+- Implement memory requirement validation
+- Add GPU availability check for potential future features
+- Consider adding network connectivity tests
+- Add validation of system locale settings for OCR
+- Implement dependency version compatibility matrix
+"""
+
 import os
 import sys
 import shutil

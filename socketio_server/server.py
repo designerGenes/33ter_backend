@@ -1,7 +1,24 @@
 #!/usr/bin/env python3
-"""
-33ter Socket.IO Server
-Handles communication between the Python screenshot/OCR service and the iOS app.
+"""33ter Socket.IO Server
+
+This module implements the Socket.IO server that handles communication between the Python
+screenshot/OCR service and the iOS app. It manages client connections, rooms, and message
+routing while providing health monitoring and connection status updates.
+
+Key Features:
+- Handles both iOS and Python client connections
+- Manages client rooms for message isolation
+- Provides health check functionality
+- Handles custom message routing
+- Maintains client connection counts
+
+#TODO:
+- Implement proper authentication and client validation
+- Add rate limiting for message broadcasts
+- Implement proper connection pooling
+- Add support for multiple rooms with different purposes
+- Consider adding message queuing for reliability
+- Implement proper SSL/TLS support
 """
 import os
 import sys

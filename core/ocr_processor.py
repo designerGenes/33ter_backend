@@ -1,4 +1,16 @@
-"""OCR processing module for 33ter application."""
+"""OCR processing module for 33ter application.
+
+This module handles screenshot capture and OCR text extraction using Tesseract.
+It manages the lifecycle of screenshots, including capture, storage, and cleanup.
+
+#TODO: 
+- Add image preprocessing to improve OCR accuracy (contrast adjustment, noise reduction)
+- Implement OCR language detection and multi-language support
+- Add error recovery for Tesseract crashes
+- Implement caching of OCR results to avoid reprocessing identical screenshots
+- Add validation of Tesseract installation and version compatibility
+- Consider adding support for region-specific screenshot capture
+"""
 import os
 import logging
 from datetime import datetime, timedelta
@@ -8,7 +20,21 @@ from PIL import ImageGrab
 from utils import get_screenshots_dir, get_logs_dir
 
 class OCRProcessor:
-    """Handles screenshot capture and OCR processing."""
+    """Handles screenshot capture and OCR processing.
+    
+    This class provides functionality for:
+    - Capturing screenshots of the entire screen
+    - Processing images with Tesseract OCR
+    - Managing screenshot storage and cleanup
+    - Logging OCR operations and errors
+    
+    #TODO:
+    - Add support for partial screen capture
+    - Implement OCR confidence scoring
+    - Add batch processing capabilities
+    - Consider adding OCR result validation
+    - Implement rate limiting for screenshot capture
+    """
     
     def __init__(self):
         self.screenshots_dir = get_screenshots_dir()

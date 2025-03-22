@@ -1,4 +1,17 @@
-"""Process management module for 33ter application."""
+"""Process management module for 33ter application.
+
+This module serves as the central coordinator for all 33ter services, managing the lifecycle
+of the SocketIO server, screenshot capture, and OCR processing components. It handles
+inter-process communication, service health monitoring, and client message routing.
+
+#TODO:
+- Implement graceful shutdown with proper cleanup of all resources
+- Add service recovery mechanisms for unexpected failures
+- Implement proper process isolation
+- Add service health monitoring and automatic restart
+- Consider implementing a proper IPC mechanism instead of file-based signaling
+- Add proper resource usage monitoring (CPU, memory, disk)
+"""
 import os
 import sys
 import time
@@ -13,7 +26,22 @@ import glob
 from .screenshot_manager import ScreenshotManager
 
 class ProcessManager:
-    """Manages the various service processes for the 33ter application."""
+    """Manages the various service processes for the 33ter application.
+    
+    This class serves as the central coordinator for:
+    - Service lifecycle management (start/stop/restart)
+    - Inter-process communication
+    - Client message routing
+    - Service health monitoring
+    - Output buffering and filtering
+    
+    #TODO:
+    - Implement process monitoring with automatic recovery
+    - Add proper process resource cleanup on shutdown
+    - Implement better error handling for subprocess management
+    - Add proper process isolation and sandboxing
+    - Consider using a proper service mesh for process communication
+    """
     
     def __init__(self):
         self.config = get_server_config()

@@ -1,4 +1,25 @@
-"""Server configuration utilities for 33ter Socket.IO server."""
+"""Server configuration utilities for 33ter Socket.IO server.
+
+This module manages server-specific configuration settings, providing defaults and handling
+updates for the Socket.IO server component. It supports dynamic configuration updates
+and maintains backward compatibility with existing configurations.
+
+Key Features:
+- Default server configuration
+- Configuration file management
+- Deep configuration merging
+- Dynamic configuration updates
+- Cross-instance configuration synchronization
+
+#TODO:
+- Add configuration validation schema
+- Implement configuration change notifications
+- Add support for multiple server profiles
+- Consider adding configuration versioning
+- Implement configuration rollback support
+- Add configuration export/import functionality
+"""
+
 import os
 import json
 from pathlib import Path
