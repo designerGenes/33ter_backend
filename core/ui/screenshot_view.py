@@ -2,6 +2,8 @@
 import os
 import json
 import curses
+import sys
+import subprocess
 from .base_view import BaseView
 from .color_scheme import *
 from utils import get_temp_dir, get_frequency_config_file
@@ -49,6 +51,9 @@ class ScreenshotView(BaseView):
 
     def handle_input(self, key):
         """Handle screenshot view specific input"""
+        if super().handle_input(key):  # Handle help overlay
+            return
+            
         if key == ord(' '):
             self.toggle_screenshot_pause()
         elif key == ord('o'):
@@ -64,6 +69,20 @@ class ScreenshotView(BaseView):
             if new_freq:
                 self.current_frequency = new_freq
                 self.save_screenshot_frequency()
+
+    def open_screenshots_folder(self):
+        """Open the screenshots folder in the system file explorer."""
+        # Use main screenshots directory instead of temp
+        screenshots_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "screenshots")
+        if not os.path.exists(screenshots_dir):
+            os.makedirs(screenshots_dir)
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(screenshots_dir)
+            elif os.name == 'posix':  # macOS and Linux
+                subprocess.run(['open' if sys.platform == 'darwin' else 'xdg-open', screenshots_dir])
+        except Exception as e:
+            print(f"Error opening screenshots folder: {e}")
 
     def load_screenshot_frequency(self):
         """Load the screenshot frequency from config file."""
@@ -171,5 +190,9 @@ class ScreenshotView(BaseView):
             "▶️  Capture running",
             "⏸️  Capture paused",
             "📸 Screenshot taken",
-            "🗑️  Old screenshots cleaned"
+            "🗑️  Old screenshots cleaned",
+            "",
+            "Frequency Bar:",
+            "▍ Current frequency setting",
+            "░ Available frequency range"
         ]
