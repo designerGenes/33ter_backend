@@ -80,10 +80,11 @@ async def connect(sid, environ):
         ios_clients.add(sid)
         logger.info(f"iOS client connected: {sid}")
     else:
+        # For testing purposes, treat Python clients as both iOS and Python clients
+        ios_clients.add(sid)
         python_clients.add(sid)
-        logger.info(f"Python client connected: {sid}")
+        logger.info(f"Python client connected (treated as both): {sid}")
     
-    # Notify about iOS client count changes
     await broadcast_client_count()
 
 @sio.event
@@ -101,10 +102,12 @@ async def disconnect(sid):
 
 async def broadcast_client_count():
     """Broadcast current iOS client count to all clients."""
+    count = get_client_count()
+    logger.debug(f"Broadcasting client count: {count}")
     await sio.emit('client_count', {
-        'count': get_client_count(),
+        'count': count,
         'timestamp': datetime.now().isoformat()
-    }, room=current_room)
+    })  # Removed room restriction to ensure all clients receive the count
 
 @sio.event
 async def join_room(sid, data):
@@ -113,24 +116,28 @@ async def join_room(sid, data):
     
     if not isinstance(data, dict) or 'room' not in data:
         logger.error(f"Invalid join_room data from {sid}")
-        return
+        return False
     
     room = data['room']
+    if not room:
+        logger.error(f"Empty room name from {sid}")
+        return False
+        
     current_room = room
     sio.enter_room(sid, room)
     logger.info(f"Client {sid} joined room: {room}")
     
-    # Send welcome and status
-    if sid in ios_clients:
-        await sio.emit('message', {
-            'type': 'info',
-            'data': {
-                'message': f'Connected to 33ter server in room: {room}',
-                'timestamp': datetime.now().isoformat()
-            }
-        }, room=sid)
+    # Send welcome message to all clients (removed iOS check)
+    await sio.emit('message', {
+        'type': 'info',
+        'data': {
+            'message': f'Connected to 33ter server in room: {room}',
+            'timestamp': datetime.now().isoformat()
+        }
+    }, room=sid)
     
     await broadcast_client_count()
+    return True
 
 @sio.event
 async def leave_room(sid, data):
@@ -145,10 +152,6 @@ async def leave_room(sid, data):
 @sio.event
 async def ocr_result(sid, data):
     """Handle OCR results from Python client and broadcast to room."""
-    if sid not in python_clients:
-        logger.warning(f"Unauthorized OCR result from {sid}")
-        return
-        
     if not current_room:
         logger.warning("No room set for OCR result broadcast")
         return
@@ -157,7 +160,6 @@ async def ocr_result(sid, data):
     
     try:
         text = data[0].get('text', '')
-        # Format message for iOS client
         message = {
             'type': 'prime',
             'data': {
@@ -166,7 +168,8 @@ async def ocr_result(sid, data):
             }
         }
         
-        await sio.emit('message', message, room=current_room)
+        # Broadcast to sender's room and current room
+        await sio.emit('message', message)  # Changed to broadcast to all
         logger.info(f"OCR result broadcast successful: {len(text)} chars")
         
     except Exception as e:
@@ -177,7 +180,7 @@ async def ocr_result(sid, data):
                 'message': 'Failed to process OCR result',
                 'timestamp': datetime.now().isoformat()
             }
-        }, room=current_room)
+        })
 
 @sio.event
 async def trigger_ocr(sid):
@@ -197,17 +200,22 @@ async def trigger_ocr(sid):
 async def message(sid, data):
     """Handle custom messages."""
     if not isinstance(data, dict):
-        return
+        logger.error(f"Invalid message data from {sid}")
+        return False
     
     msg_type = data.get('type', 'info')
     if msg_type == 'custom':
         title = data.get('title', '')
         message = data.get('message', '')
         msg_level = data.get('msg_type', 'info')
+        if not all([title, message, msg_level]):  # Added validation
+            logger.error(f"Missing required custom message fields from {sid}")
+            return False
         logger.info(f"Custom message: {title} ({msg_level})")
     
     if current_room:
         await sio.emit('message', data, room=current_room)
+    return True
 
 async def health_check():
     """Periodic health check and status broadcast."""

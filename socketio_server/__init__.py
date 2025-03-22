@@ -15,10 +15,10 @@ Components:
 - Implement proper authentication system
 """
 
-import client 
-import server
+from . import client
+from . import server
 
 __all__ = [
-    client,
-    server
+    'client',
+    'server'
 ]

@@ -52,3 +52,7 @@ def get_temp_dir():
 def get_frequency_config_file():
     """Get the screenshot frequency configuration file path."""
     return os.path.join(get_config_dir(), "screenshot_frequency.json")
+
+def get_server_config_file():
+    """Get the server configuration file path."""
+    return os.path.join(get_config_dir(), "server_config.json")
