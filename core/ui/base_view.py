@@ -1,5 +1,8 @@
 """Base class for terminal UI views."""
 import curses
+import sys
+import importlib.util
+import os
 from abc import ABC, abstractmethod
 from .color_scheme import *
 
@@ -10,6 +13,8 @@ class BaseView(ABC):
         self.height, self.width = stdscr.getmaxyx()
         self.active = False
         self.help_active = False
+        self.show_help = False
+        self.view_name = "base"
         
     def on_activate(self):
         """Called when view becomes active."""
@@ -77,15 +82,50 @@ class BaseView(ABC):
         """Draw the view-specific content."""
         pass
 
-    @abstractmethod
     def handle_input(self, key):
-        """Handle user input."""
+        """Handle common input across all views."""
         if key == ord('?'):
-            self.help_active = True
-            self.show_help(self.get_help_title(), self.get_help_content())
-            self.help_active = False
+            self.show_help = not self.show_help
+            return True
+        elif key == 18:  # Ctrl-R or Cmd-R (18 is ASCII for 'r' - 96)
+            self.reload_view()
             return True
         return False
+
+    def reload_view(self):
+        """Reload the current view's module from disk."""
+        try:
+            # Get the current module's file path
+            module_file = sys.modules[self.__class__.__module__].__file__
+            
+            # Remove the module from sys.modules to force a fresh reload
+            module_name = self.__class__.__module__
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            
+            # Load the module spec
+            spec = importlib.util.spec_from_file_location(module_name, module_file)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            
+            # Get the view class and create new instance
+            view_class = getattr(module, self.__class__.__name__)
+            new_view = view_class(self.stdscr, self.process_manager)
+            
+            # Preserve important state
+            new_view.height = self.height
+            new_view.width = self.width
+            new_view.show_help = self.show_help
+            
+            # Update self with new instance's attributes
+            self.__class__ = view_class
+            self.__dict__.update(new_view.__dict__)
+            
+        except Exception as e:
+            # Log error but don't crash
+            with open(os.path.join(os.path.dirname(module_file), "reload_error.log"), "w") as f:
+                f.write(f"Error reloading view: {str(e)}")
 
     def show_help(self, title, help_lines):
         """Show help overlay with the given content."""

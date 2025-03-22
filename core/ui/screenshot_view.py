@@ -37,7 +37,7 @@ class ScreenshotView(BaseView):
         self.stdscr.addstr(f" {self.current_frequency:.1f}s", get_view_color("screenshot"))
         
         # Controls
-        self.draw_controls("⌨️  Space:Pause  ◀️ ▶️ :Adjust  ⚡️F:Set  📂O:Open", 9)
+        self.draw_controls("⌨️  Space:Pause  ◀️ ▶️ :Adjust  ⚡️S:Set  📂O:Open", 9)
         
         # Output
         start_y = 11
@@ -64,7 +64,7 @@ class ScreenshotView(BaseView):
         elif key == curses.KEY_RIGHT:
             self.current_frequency = min(10.0, self.current_frequency + 0.5)
             self.save_screenshot_frequency()
-        elif key == ord('f'):
+        elif key == ord('s'):  # Changed from 'f' to 's'
             new_freq = self.get_frequency_input()
             if new_freq:
                 self.current_frequency = new_freq
@@ -183,7 +183,7 @@ class ScreenshotView(BaseView):
             "Controls:",
             "Space: Pause/Resume screenshot capture",
             "←→: Adjust frequency by 0.5s",
-            "F: Set exact frequency (0.5-10s)",
+            "S: Set exact frequency (0.5-10s)",  # Changed from F to S
             "O: Open screenshots folder",
             "",
             "Status Icons:",
