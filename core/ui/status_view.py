@@ -4,8 +4,12 @@ from .base_view import BaseView
 from .color_scheme import *
 
 class StatusView(BaseView):
-    def draw(self):
-        """Draw the status view showing connection information"""
+    def __init__(self, stdscr, process_manager):
+        super().__init__(stdscr, process_manager)
+        self.view_name = "status"
+
+    def draw_content(self):
+        """Draw the status view content."""
         self.draw_header("STATUS VIEW")
         
         # Socket Server Status
@@ -42,8 +46,30 @@ class StatusView(BaseView):
         # Controls
         self.draw_controls("[R]estart Server  [S]top/Start Server  [?]Help", self.height-2)
 
+    def get_help_content(self):
+        """Get help content for status view."""
+        return [
+            "This view shows the current state of all services",
+            "and iOS client connections.",
+            "",
+            "Controls:",
+            "R: Restart SocketIO server",
+            "S: Start/Stop server",
+            "1-3: Switch between views",
+            "Q: Quit application",
+            "",
+            "Status Indicators:",
+            "📱 Active iOS connection",
+            "❌ No iOS clients connected",
+            "RUNNING: Service is active",
+            "STOPPED: Service is inactive"
+        ]
+
     def handle_input(self, key):
-        """Handle status view specific input"""
+        """Handle status view specific input."""
+        if super().handle_input(key):  # Handle help overlay
+            return
+            
         if key == ord('r'):
             self.process_manager.restart_service('socket')
         elif key == ord('s'):

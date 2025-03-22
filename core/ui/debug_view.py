@@ -9,13 +9,14 @@ class DebugView(BaseView):
     
     def __init__(self, stdscr, process_manager):
         super().__init__(stdscr, process_manager)
+        self.view_name = "debug"
         self.message_form_active = False
 
-    def draw(self):
-        """Draw the debug view with SocketIO messages."""
+    def draw_content(self):
+        """Draw the debug view content."""
         self.draw_header("DEBUG LOG")
         
-        # Draw controls
+        # Draw controls with iOS client status
         ios_clients = self.process_manager.get_ios_client_count()
         status_text = f"📱 {ios_clients} iOS client{'s' if ios_clients != 1 else ''}"
         status_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
@@ -157,3 +158,25 @@ class DebugView(BaseView):
     def clear_messages(self):
         """Clear the debug message buffer."""
         self.process_manager.output_buffers["debug"].clear()
+
+    def get_help_content(self):
+        """Get help content for debug view."""
+        return [
+            "This view shows SocketIO communication and allows",
+            "sending messages to connected iOS clients.",
+            "",
+            "Controls:",
+            "P: Post new message",
+            "R: Clear message history",
+            "",
+            "Message Types:",
+            "📱 Info - Basic information",
+            "✨ Prime - Important events",
+            "⚠️  Warning - Potential issues",
+            "❌ Error - Problems/failures",
+            "",
+            "Notes:",
+            "- Ping/pong messages are filtered",
+            "- iOS client count shown in status bar",
+            "- Messages show timestamp and type"
+        ]

@@ -9,11 +9,12 @@ from utils import get_temp_dir, get_frequency_config_file
 class ScreenshotView(BaseView):
     def __init__(self, stdscr, process_manager):
         super().__init__(stdscr, process_manager)
+        self.view_name = "screenshot"
         self.current_frequency = 4.0
         self.load_screenshot_frequency()
 
-    def draw(self):
-        """Draw the screenshot service view"""
+    def draw_content(self):
+        """Draw the screenshot view content."""
         self.draw_header("SCREENSHOT LOG")
         
         # Service status
@@ -152,3 +153,23 @@ class ScreenshotView(BaseView):
             if os.path.exists(resume_file):
                 os.rmdir(resume_file)
             os.makedirs(pause_file)
+
+    def get_help_content(self):
+        """Get help content for screenshot view."""
+        return [
+            "This view manages the screenshot capture service.",
+            "Screenshots are taken at regular intervals and",
+            "automatically cleaned up when older than 3 minutes.",
+            "",
+            "Controls:",
+            "Space: Pause/Resume screenshot capture",
+            "←→: Adjust frequency by 0.5s",
+            "F: Set exact frequency (0.5-10s)",
+            "O: Open screenshots folder",
+            "",
+            "Status Icons:",
+            "▶️  Capture running",
+            "⏸️  Capture paused",
+            "📸 Screenshot taken",
+            "🗑️  Old screenshots cleaned"
+        ]
