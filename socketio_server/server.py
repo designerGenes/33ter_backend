@@ -22,14 +22,22 @@ Key Features:
 """
 import os
 import sys
+from pathlib import Path
+
+# Add app root to Python path if needed
+app_root = str(Path(__file__).parent.parent.absolute())
+if app_root not in sys.path:
+    sys.path.insert(0, app_root)
+
+from utils.server_config import get_server_config, update_server_config
+from utils.path_config import get_logs_dir
+
 import logging
 import argparse
 from datetime import datetime
 import asyncio
 import socketio
 from aiohttp import web
-from utils import get_server_config, update_server_config
-from utils import get_logs_dir
 
 def setup_logging(log_level: str = "INFO"):
     """Configure logging with the specified level."""
@@ -284,40 +292,36 @@ def main():
         
         # Log startup
         logger.info(f"Starting Socket.IO server on {args.host}:{args.port}")
-        logger.info(f"Default room: {args.room}")
-        logger.info(f"Log level: {args.log_level}")
         
-        # Update config with any command line overrides
-        server_updates = {
-            'server': {
-                'host': args.host,
-                'port': args.port,
-                'room': args.room,
-                'log_level': args.log_level
-            }
-        }
-        update_server_config(server_updates)
-        global current_room
-        current_room = args.room
+        # Create web app and attach Socket.IO
+        app = web.Application()
+        sio.attach(app)
         
         # Create event loop
-        loop = asyncio.get_event_loop()
-        
-        # Start health check if enabled
-        if config['health_check']['enabled']:
-            loop.create_task(health_check())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
         # Start server
-        web.run_app(
-            app,
-            host=args.host,
-            port=args.port
-        )
+        runner = web.AppRunner(app)
+        loop.run_until_complete(runner.setup())
+        site = web.TCPSite(runner, args.host, args.port)
+        loop.run_until_complete(site.start())
+        
+        print(f"Running on http://{args.host}:{args.port}")
+        sys.stdout.flush()
+        
+        # Run forever
+        loop.run_forever()
         
     except Exception as e:
         logger.error(f"Failed to start server: {e}")
         return 1
-        
+    finally:
+        if 'runner' in locals():
+            loop.run_until_complete(runner.cleanup())
+        if 'loop' in locals():
+            loop.close()
+    
     return 0
 
 if __name__ == '__main__':

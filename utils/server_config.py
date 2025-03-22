@@ -29,10 +29,10 @@ from .path_config import get_config_dir
 
 DEFAULT_CONFIG = {
     "server": {
-        "host": "0.0.0.0",
+        "host": "127.0.0.1",
         "port": 5348,
         "room": "33ter_room",
-        "cors_origins": "*",
+        "cors_origins": ["127.0.0.1:*", "0.0.0.0:*", "localhost:*"],
         "log_level": "INFO"
     },
     "health_check": {

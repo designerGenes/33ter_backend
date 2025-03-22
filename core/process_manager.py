@@ -91,68 +91,64 @@ class ProcessManager:
     def _start_socketio_service(self):
         """Start the SocketIO server and establish client connection."""
         try:
-            env = os.environ.copy()
+            server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            server_script = os.path.join(server_dir, 'socketio_server', 'server.py')
+
+            # Server should bind to all interfaces
+            server_host = '127.0.0.1'
+            # Client should connect to localhost
+            client_host = '127.0.0.1'
+            port = 5348
+
             command = [
                 sys.executable,
-                'socketio_server/server.py',
-                '--host', self.config['server']['host'],
-                '--port', str(self.config['server']['port']),
-                '--room', self.config['server']['room']
+                server_script,
+                '--host', server_host,
+                '--port', str(port),
+                '--room', '33ter_room',
+                '--log-level', 'DEBUG'
             ]
             
-            # Start the SocketIO server process
+            # Start server process
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,
-                env=env
+                bufsize=1
             )
             
             self.processes['socket'] = process
-            self.logger.info(f"Started SocketIO server (PID: {process.pid})")
+            self.logger.info(f"Started SocketIO server on {server_host}:{port} (PID: {process.pid})")
             
-            # Start output monitoring
-            self._monitor_output('socket', process)
-            
-            # Connect our client after brief delay to ensure server is ready
+            # Wait for server to start
             time.sleep(2)
-            self._connect_to_socketio()
+            
+            # Try connecting multiple times
+            max_retries = 3
+            retry_delay = 1
+            
+            for attempt in range(max_retries):
+                try:
+                    sio = socketio.Client(logger=False, engineio_logger=False)
+                    url = f"http://{client_host}:{port}"
+                    self.logger.info(f"Attempting to connect to SocketIO server at {url} (attempt {attempt + 1})")
+                    sio.connect(url, wait_timeout=5)
+                    self.socketio_client = sio
+                    self.logger.info("Successfully connected to SocketIO server")
+                    return
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        self.logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {retry_delay}s")
+                        time.sleep(retry_delay)
+                    else:
+                        raise
             
         except Exception as e:
-            raise Exception(f"Failed to start SocketIO service: {e}")
-
-    def _connect_to_socketio(self):
-        """Connect to our own SocketIO server for sending messages."""
-        try:
-            sio = socketio.Client()
-            host = self.config['server']['host']
-            port = self.config['server']['port']
-            
-            @sio.event
-            def connect():
-                self.logger.info("Connected to SocketIO server")
-                self._add_to_buffer("debug", "Connected to SocketIO server", "info")
-                
-            @sio.event
-            def disconnect():
-                self.logger.info("Disconnected from SocketIO server")
-                self._add_to_buffer("debug", "Disconnected from SocketIO server", "warning")
-                
-            @sio.event
-            def client_count(data):
-                prev_count = self.ios_clients_connected
-                self.ios_clients_connected = data.get('count', 0)
-                if prev_count != self.ios_clients_connected:
-                    self._add_to_buffer("debug", f"iOS clients connected: {self.ios_clients_connected}", "info")
-            
-            sio.connect(f"http://{host}:{port}")
-            self.socketio_client = sio
-            
-        except Exception as e:
-            self.logger.error(f"Failed to connect to SocketIO server: {e}")
-            self.socketio_client = None
+            self.logger.error(f"Failed to start SocketIO service: {e}")
+            if 'socket' in self.processes:
+                self.stop_service('socket')
+            raise
 
     def _add_to_buffer(self, buffer_name: str, message: str, level: str = "info"):
         """Add a formatted message to a specific output buffer."""
@@ -277,105 +273,6 @@ class ProcessManager:
         thread = threading.Thread(target=_read_output, daemon=True)
         thread.start()
 
-    def open_screenshots_folder(self):
-        """Open the screenshots directory in the system file explorer."""
-        screenshots_dir = get_screenshots_dir()
-        try:
-            if sys.platform == 'darwin':  # macOS
-                subprocess.run(['open', screenshots_dir])
-            elif sys.platform == 'win32':  # Windows
-                subprocess.run(['explorer', screenshots_dir])
-            else:  # Linux and others
-                subprocess.run(['xdg-open', screenshots_dir])
-        except Exception as e:
-            self.logger.error(f"Failed to open screenshots folder: {e}")
-
-    def trigger_processing(self):
-        """Trigger OCR processing of the latest screenshot and send to iOS app."""
-        try:
-            self.logger.info("Manually triggering OCR processing")
-            self._add_to_buffer("debug", "Manual OCR processing triggered", "info")
-            
-            extracted_text = self.screenshot_manager.process_latest_screenshot()
-            
-            if not extracted_text:
-                self._add_to_buffer("debug", "Failed to extract text from screenshot", "warning")
-                return None
-                
-            # Send extracted text to iOS app via SocketIO
-            self.send_ocr_result_to_socket(extracted_text)
-            return extracted_text
-            
-        except Exception as e:
-            error_msg = f"Error during manual processing: {str(e)}"
-            self.logger.error(error_msg)
-            self._add_to_buffer("debug", error_msg, "error")
-            return None
-
-    def send_ocr_result_to_socket(self, text):
-        """Send OCR result to SocketIO server in a standardized format for iOS app."""
-        if not self.socketio_client:
-            self._add_to_buffer("debug", "Cannot send OCR result: SocketIO not connected", "warning")
-            return
-            
-        try:
-            # Prepare standardized message format for the iOS app
-            message = {
-                "type": "ocr_result",
-                "timestamp": time.time(),
-                "data": {
-                    "text": text,
-                    "source": "manual_trigger"
-                }
-            }
-            
-            # Send to the room
-            room = self.config['server']['room']
-            self.socketio_client.emit('message', message, room=room)
-            
-            # Log success
-            chars = len(text)
-            preview = text[:50] + "..." if len(text) > 50 else text
-            self._add_to_buffer("debug", f"OCR result sent ({chars} chars): {preview}", "info")
-            
-        except Exception as e:
-            error_msg = f"Failed to send OCR result: {str(e)}"
-            self.logger.error(error_msg)
-            self._add_to_buffer("debug", error_msg, "warning")
-
-    def post_message_to_socket(self, message, title, msg_type):
-        """Post a custom message to the SocketIO server."""
-        if not self.socketio_client:
-            self._add_to_buffer("debug", "Cannot post message: SocketIO not connected", "warning")
-            return
-            
-        try:
-            # Prepare message format
-            formatted_message = {
-                "type": "custom",
-                "title": title,
-                "message": message,
-                "msg_type": msg_type
-            }
-            
-            # Send to the room
-            room = self.config['server']['room']
-            self.socketio_client.emit('message', formatted_message, room=room)
-            
-            # Add to debug output buffer with formatted display
-            self._add_to_buffer("debug", f"{title}: {message}", msg_type)
-            
-        except Exception as e:
-            error_msg = f"Failed to post message: {str(e)}"
-            self.logger.error(error_msg)
-            self._add_to_buffer("debug", error_msg, "warning")
-    
     def get_ios_client_count(self):
         """Get the number of connected iOS clients."""
         return self.ios_clients_connected
-
-    def clear_output(self, service_name: str):
-        """Clear the output buffer for a specific service."""
-        if service_name in self.output_buffers:
-            self.output_buffers[service_name].clear()
-            self._add_to_buffer("debug", "Message history cleared", "info")

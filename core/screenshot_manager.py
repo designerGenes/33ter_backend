@@ -44,6 +44,7 @@ class ScreenshotManager:
         self.capture_thread = None
         self.logger = self._setup_logging()
         self.screenshot_interval = 4.0
+        self.output_buffer = []  # Initialize output buffer
         self.load_screenshot_config()
         self.output_buffer = []
         

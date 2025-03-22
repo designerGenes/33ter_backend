@@ -57,6 +57,15 @@ def setup_logging() -> None:
 def setup_environment() -> Optional[ProcessManager]:
     """Initialize application environment and process manager."""
     try:
+        # Check Tesseract installation
+        tesseract_path = "/opt/homebrew/bin/tesseract"  # Common path on macOS with Homebrew
+        if not os.path.exists(tesseract_path):
+            logging.error(f"Tesseract not found at {tesseract_path}")
+            logging.info("Please install Tesseract using: brew install tesseract")
+            return None
+            
+        os.environ["TESSDATA_PREFIX"] = "/opt/homebrew/share/tessdata/"
+        
         # Initialize process manager
         process_manager = ProcessManager()
         return process_manager
