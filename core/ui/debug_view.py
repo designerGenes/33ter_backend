@@ -114,7 +114,7 @@ class DebugView(BaseView):
                     messageType="trigger"
                 )
                 
-                if result:  # Error message returned
+                if result is not None:  # Error message returned
                     error_details = f"Trigger failed: {result}"
                     if not self.process_manager.get_ios_client_count():
                         error_details += "\nNote: No iOS clients are currently connected to receive the trigger"
@@ -140,8 +140,7 @@ class DebugView(BaseView):
         
         # Create window with proper position and size
         win = curses.newwin(form_height, form_width, form_y, form_x)
-        win.keypad(1)
-        win.box()
+        win.keypad(1)  # Enable special key input
         
         fields = [
             {"label": "Type", "value": "info", 

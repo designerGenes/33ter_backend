@@ -54,6 +54,7 @@ class ProcessManager:
         self.ios_clients_connected = 0
         self.socketio_client = None
         self.screenshot_manager = ScreenshotManager()
+        self.room_joined = False
         
     def _setup_logging(self):
         """Configure process manager logging."""
@@ -94,6 +95,9 @@ class ProcessManager:
             server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             server_script = os.path.join(server_dir, 'socketio_server', 'server.py')
 
+            room_name = '33ter_room'  # Define room name once
+            self.config['server']['room'] = room_name  # Update config with room name
+
             # Server should bind to all interfaces
             server_host = '127.0.0.1'
             # Client should connect to localhost
@@ -105,7 +109,7 @@ class ProcessManager:
                 server_script,
                 '--host', server_host,
                 '--port', str(port),
-                '--room', '33ter_room',
+                '--room', room_name,
                 '--log-level', 'DEBUG'
             ]
             
@@ -131,15 +135,46 @@ class ProcessManager:
             for attempt in range(max_retries):
                 try:
                     sio = socketio.Client(logger=False, engineio_logger=False)
+                    
+                    # Set up event handlers before connecting
+                    @sio.event
+                    def connect():
+                        self.logger.info("Socket.IO client connected to server")
+                    
+                    @sio.event
+                    def disconnect():
+                        self.logger.info("Socket.IO client disconnected from server")
+                        self.room_joined = False
+                    
+                    @sio.on('client_count')
+                    def on_client_count(data):
+                        if 'count' in data:
+                            self.ios_clients_connected = data['count']
+                            self.logger.info(f"iOS clients connected: {self.ios_clients_connected}")
+                    
                     url = f"http://{client_host}:{port}"
                     self.logger.info(f"Attempting to connect to SocketIO server at {url} (attempt {attempt + 1})")
-                    sio.connect(url, wait_timeout=5)
+                    
+                    # Connect with headers to identify as Python client
+                    headers = {
+                        'User-Agent': 'Python/33ter-Client'
+                    }
+                    sio.connect(url, headers=headers, wait_timeout=5)
                     self.socketio_client = sio
-                    self.logger.info("Successfully connected to SocketIO server")
+                    
+                    # Explicitly join the room
+                    sio.emit('join_room', {'room': room_name}, callback=self._room_join_callback)
+                    self.logger.info(f"Join room request sent for '{room_name}'")
+                    
+                    # Wait briefly for room join callback
+                    time.sleep(0.5)
+                    
+                    self._add_to_buffer("debug", f"Connected to SocketIO server and attempting to join room '{room_name}'", "info")
                     return
+                    
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        self.logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {retry_delay}s")
+                        self.logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {retry_delay}s: {e}")
                         time.sleep(retry_delay)
                     else:
                         raise
@@ -149,6 +184,18 @@ class ProcessManager:
             if 'socket' in self.processes:
                 self.stop_service('socket')
             raise
+    
+    def _room_join_callback(self, success):
+        """Callback for room join operation."""
+        if success:
+            self.room_joined = True
+            self._add_to_buffer("debug", f"Successfully joined room '{self.config['server']['room']}'", "info")
+            self.logger.info(f"Room join successful for '{self.config['server']['room']}'")
+        else:
+            self.room_joined = False
+            error_msg = f"Failed to join room '{self.config['server']['room']}'"
+            self._add_to_buffer("debug", error_msg, "error")
+            self.logger.error(error_msg)
 
     def _add_to_buffer(self, buffer_name: str, message: str, level: str = "info"):
         """Add a formatted message to a specific output buffer."""
@@ -177,6 +224,7 @@ class ProcessManager:
                     try:
                         self.socketio_client.disconnect()
                         self.socketio_client = None
+                        self.room_joined = False
                     except:
                         pass
                 
@@ -280,14 +328,15 @@ class ProcessManager:
     def post_message_to_socket(self, value: str, messageType: str):
         """Post a message to the SocketIO server using standardized format."""
         if not self.socketio_client:
-            error_msg = "SocketIO client not connected\n"
-            error_msg += "Debug info:\n"
-            error_msg += f"- Socket process running: {self.is_process_running('socket')}\n"
-            error_msg += f"- iOS clients connected: {self.ios_clients_connected}\n"
-            error_msg += "Suggestion: Use [R]estart Server in Status view to reconnect"
-            return error_msg
+            return "SocketIO client not connected - Use [R]estart Server in Status view"
+            
+        if not self.socketio_client.connected:
+            return "SocketIO client not connected to server - Use [R]estart Server in Status view"
             
         try:
+            # Add debug info before sending
+            self._add_to_buffer("debug", f"Sending {messageType} message...", "info")
+            
             # Standardized message format
             formatted_message = {
                 "messageType": messageType,
@@ -295,22 +344,34 @@ class ProcessManager:
                 "value": value
             }
             
-            # Send to current room
+            # Get room from config
             room = self.config['server']['room']
-            self.socketio_client.emit('message', formatted_message, room=room)
             
-            # Add success message to debug buffer
-            success_msg = f"Message sent ({messageType}): {value}"
-            self._add_to_buffer("debug", success_msg, messageType)
+            # Check if we've joined the room
+            if not self.room_joined:
+                # Try to join the room again
+                self.logger.warning("Not joined to room, attempting to join before sending message")
+                self.socketio_client.emit('join_room', {'room': room}, callback=self._room_join_callback)
+                time.sleep(0.5)  # Brief wait for callback
+                
+                if not self.room_joined:
+                    return f"Not joined to room '{room}' - messages may not be delivered properly"
+            
+            # Send the message
+            self.socketio_client.emit('message', formatted_message)
+            
+            # Log success
+            status = f"Message sent to room '{room}'"
+            if self.ios_clients_connected > 0:
+                status += f" ({self.ios_clients_connected} iOS client{'s' if self.ios_clients_connected != 1 else ''} online)"
+            self._add_to_buffer("debug", status, messageType)
             return None
             
         except Exception as e:
             error_msg = f"Failed to send message: {str(e)}\n"
-            error_msg += "Debug info:\n"
-            if "not connected" in str(e).lower():
-                error_msg += "- Socket disconnected - try restarting the socket service\n"
-            error_msg += f"- Socket process running: {self.is_process_running('socket')}\n"
-            error_msg += f"- iOS clients connected: {self.ios_clients_connected}"
+            error_msg += f"Socket connected: {self.socketio_client.connected if self.socketio_client else False}\n"
+            error_msg += f"Room joined: {self.room_joined}\n"
+            error_msg += f"Server running: {self.is_process_running('socket')}"
             self.logger.error(error_msg)
             return error_msg
 

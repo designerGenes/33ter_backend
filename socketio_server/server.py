@@ -205,30 +205,36 @@ async def trigger_ocr(sid):
 @sio.event
 async def message(sid, data):
     """Handle custom messages."""
-    if not isinstance(data, dict):
-        logger.error(f"Invalid message data from {sid}")
-        return False
-    
-    msg_type = data.get('type', 'info')
-    if msg_type == 'custom':
-        title = data.get('title', '')
-        message = data.get('message', '')
-        msg_level = data.get('msg_type', 'info')
-        if not all([title, message, msg_level]):
-            logger.error(f"Missing required custom message fields from {sid}")
-            return False
-        logger.info(f"Custom message: {title} ({msg_level})")
+    try:
+        if not isinstance(data, dict):
+            error = "Invalid message format: not a dict"
+            logger.error(f"{error} from {sid}")
+            return error
+            
+        # Validate required fields
+        required_fields = ['messageType', 'from', 'value']
+        missing = [field for field in required_fields if field not in data]
+        if missing:
+            error = f"Missing required fields: {', '.join(missing)}"
+            logger.error(f"{error} from {sid}")
+            return error
+            
+        logger.info(f"Message received: {data['messageType']} from {data['from']}")
         
-        # Broadcast custom message to all clients
-        logger.debug(f"Broadcasting custom message to all clients")
-        await sio.emit('message', data)
-        return True
-    
-    # For non-custom messages, use room-based broadcasting
-    if current_room:
-        logger.debug(f"Broadcasting message to room {current_room}")
-        await sio.emit('message', data, room=current_room)
-    return True
+        # Broadcast to room
+        if current_room:
+            logger.debug(f"Broadcasting message to room {current_room}")
+            await sio.emit('message', data, room=current_room)
+            return None  # Success case
+            
+        error = "No room set for message broadcast"
+        logger.warning(error)
+        return error
+        
+    except Exception as e:
+        error = f"Error processing message: {str(e)}"
+        logger.error(error)
+        return error
 
 async def health_check():
     """Periodic health check and status broadcast."""
