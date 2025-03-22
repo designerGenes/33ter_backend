@@ -276,3 +276,33 @@ class ProcessManager:
     def get_ios_client_count(self):
         """Get the number of connected iOS clients."""
         return self.ios_clients_connected
+
+    def post_message_to_socket(self, message, title, msg_type):
+        """Post a custom message to the SocketIO server."""
+        if not self.socketio_client:
+            self._add_to_buffer("debug", "Cannot post message: SocketIO not connected", "warning")
+            return
+            
+        try:
+            # Prepare message format
+            formatted_message = {
+                "type": "custom",
+                "data": {  # Add data wrapper to match expected format
+                    "title": title,
+                    "message": message,
+                    "msg_type": msg_type,
+                    "timestamp": time.time()
+                }
+            }
+            
+            # Send to current room
+            room = self.config['server']['room']
+            self.socketio_client.emit('message', formatted_message, room=room)
+            
+            # Add to debug output buffer with formatted display
+            self._add_to_buffer("debug", f"{title}: {message}", msg_type)
+            
+        except Exception as e:
+            error_msg = f"Failed to post message: {str(e)}"
+            self.logger.error(error_msg)
+            self._add_to_buffer("debug", error_msg, "error")
