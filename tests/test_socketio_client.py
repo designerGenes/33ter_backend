@@ -39,7 +39,7 @@ async def test_client_connection(screenshot_client, server_app):
     app, server_url = await server_app.__anext__()
     
     # Override server URL in client config
-    client.config['server']['host'] = '127.0.0.1'
+    client.config['server']['host'] = '0.0.0.0'
     client.config['server']['port'] = 5349
     
     # Test connection

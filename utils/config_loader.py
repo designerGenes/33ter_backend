@@ -42,7 +42,7 @@ class ConfigManager:
                 "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
             },
             "server": {
-                "host": "127.0.0.1",
+                "host": "0.0.0.0",
                 "port": 5348,
                 "room": "33ter_room"
             },

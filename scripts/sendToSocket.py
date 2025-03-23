@@ -26,7 +26,7 @@ def send_message(value: str, message_type: str = "info", from_source: str = "com
         
         # Get room name from config
         room_name = config.get('server', {}).get('room', '33ter_room')
-        host = '127.0.0.1'  # Default to localhost
+        host = '0.0.0.0'  # Default to localhost
         port = 5348  # Default port
         
         # Track connection and message status

@@ -41,7 +41,7 @@ def test_socketio_server_connection():
     env['PYTHONPATH'] = app_root
     
     # Start server process with output capture
-    host = '127.0.0.1'
+    host = '0.0.0.0'
     port = 5348
     
     # Create process with both stdout and stderr pipes

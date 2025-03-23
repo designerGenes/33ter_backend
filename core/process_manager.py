@@ -84,8 +84,8 @@ class ProcessManager:
             room_name = '33ter_room'
             self.config['server']['room'] = room_name
 
-            server_host = '127.0.0.1'
-            client_host = '127.0.0.1'
+            server_host = '0.0.0.0'
+            client_host = '0.0.0.0'
             port = 5348
 
             command = [
