@@ -1,17 +1,4 @@
-"""Process management module for 33ter application.
-
-This module serves as the central coordinator for all 33ter services, managing the lifecycle
-of the SocketIO server, screenshot capture, and OCR processing components. It handles
-inter-process communication, service health monitoring, and client message routing.
-
-#TODO:
-- Implement graceful shutdown with proper cleanup of all resources
-- Add service recovery mechanisms for unexpected failures
-- Implement proper process isolation
-- Add service health monitoring and automatic restart
-- Consider implementing a proper IPC mechanism instead of file-based signaling
-- Add proper resource usage monitoring (CPU, memory, disk)
-"""
+"""Process management module for 33ter application."""
 import os
 import sys
 import time
@@ -19,39 +6,32 @@ import json
 import logging
 import subprocess
 import socketio
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
 from utils import get_logs_dir, get_screenshots_dir, get_temp_dir
 from utils import get_server_config
 import glob
 from .screenshot_manager import ScreenshotManager
+from .message_system import MessageManager, MessageLevel, MessageCategory
 
 class ProcessManager:
-    """Manages the various service processes for the 33ter application.
-    
-    This class serves as the central coordinator for:
-    - Service lifecycle management (start/stop/restart)
-    - Inter-process communication
-    - Client message routing
-    - Service health monitoring
-    - Output buffering and filtering
-    
-    #TODO:
-    - Implement process monitoring with automatic recovery
-    - Add proper process resource cleanup on shutdown
-    - Implement better error handling for subprocess management
-    - Add proper process isolation and sandboxing
-    - Consider using a proper service mesh for process communication
-    """
+    """Manages the various service processes for the 33ter application."""
     
     def __init__(self):
         self.config = get_server_config()
         self.logger = self._setup_logging()
         self.processes: Dict[str, subprocess.Popen] = {}
+        
+        # Initialize legacy output buffers for backwards compatibility
         self.output_buffers: Dict[str, list] = {
             'screenshot': [],
-            'debug': []  # Renamed from 'socket' to 'debug'
+            'debug': []
         }
+        
+        # Initialize the message manager
+        self.message_manager = MessageManager()
+        
         self.ios_clients_connected = 0
+        self.local_connected = False
         self.socketio_client = None
         self.screenshot_manager = ScreenshotManager()
         self.room_joined = False
@@ -95,12 +75,10 @@ class ProcessManager:
             server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             server_script = os.path.join(server_dir, 'socketio_server', 'server.py')
 
-            room_name = '33ter_room'  # Define room name once
-            self.config['server']['room'] = room_name  # Update config with room name
+            room_name = '33ter_room'
+            self.config['server']['room'] = room_name
 
-            # Server should bind to all interfaces
             server_host = '127.0.0.1'
-            # Client should connect to localhost
             client_host = '127.0.0.1'
             port = 5348
 
@@ -113,7 +91,6 @@ class ProcessManager:
                 '--log-level', 'DEBUG'
             ]
             
-            # Start server process
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
@@ -125,10 +102,8 @@ class ProcessManager:
             self.processes['socket'] = process
             self.logger.info(f"Started SocketIO server on {server_host}:{port} (PID: {process.pid})")
             
-            # Wait for server to start
             time.sleep(2)
             
-            # Try connecting multiple times
             max_retries = 3
             retry_delay = 1
             
@@ -136,28 +111,48 @@ class ProcessManager:
                 try:
                     sio = socketio.Client(logger=False, engineio_logger=False)
                     
-                    # Set up event handlers before connecting
                     @sio.event
                     def connect():
                         self.logger.info("Socket.IO client connected to server")
+                        self.local_connected = True
                     
                     @sio.event
                     def disconnect():
                         self.logger.info("Socket.IO client disconnected from server")
+                        self.local_connected = False
                         self.room_joined = False
                     
                     @sio.on('client_count')
                     def on_client_count(data):
                         if 'count' in data:
-                            self.ios_clients_connected = data['count']
+                            # Subtract our local connection from count
+                            count = data['count']
+                            if self.local_connected and count > 0:
+                                count -= 1
+                            self.ios_clients_connected = count
                             self.logger.info(f"iOS clients connected: {self.ios_clients_connected}")
+                    
+                    @sio.on('message')
+                    def on_message(data):
+                        # Log received messages to debug output in JSON format
+                        if isinstance(data, dict):
+                            msg_type = data.get('messageType', 'unknown')
+                            msg_from = data.get('from', 'unknown')
+                            value = data.get('value', '')
+                            
+                            timestamp = time.strftime("%H:%M:%S")
+                            self.output_buffers["debug"].append(f"{timestamp}: {{")
+                            self.output_buffers["debug"].append(f"    type: {msg_type},")
+                            self.output_buffers["debug"].append(f"    value: {value},")
+                            self.output_buffers["debug"].append(f"    from: {msg_from}")
+                            self.output_buffers["debug"].append("}")
                     
                     url = f"http://{client_host}:{port}"
                     self.logger.info(f"Attempting to connect to SocketIO server at {url} (attempt {attempt + 1})")
                     
                     # Connect with headers to identify as Python client
                     headers = {
-                        'User-Agent': 'Python/33ter-Client'
+                        'User-Agent': 'Python/33ter-Client-LocalBackend'  # Clear identifier
                     }
                     sio.connect(url, headers=headers, wait_timeout=5)
                     self.socketio_client = sio
@@ -166,7 +161,6 @@ class ProcessManager:
                     sio.emit('join_room', {'room': room_name}, callback=self._room_join_callback)
                     self.logger.info(f"Join room request sent for '{room_name}'")
                     
-                    # Wait briefly for room join callback
                     time.sleep(0.5)
                     
                     self._add_to_buffer("debug", f"Connected to SocketIO server and attempting to join room '{room_name}'", "info")
@@ -199,17 +193,60 @@ class ProcessManager:
 
     def _add_to_buffer(self, buffer_name: str, message: str, level: str = "info"):
         """Add a formatted message to a specific output buffer."""
-        timestamp = time.strftime("%H:%M:%S")
-        emoji = {
-            "info": "📱",
-            "prime": "✨",
-            "warning": "⚠️",
-            "error": "❌"
-        }.get(level, "ℹ️")
+        # For all debug messages, let's use the JSON-style format instead of the emoji format
+        if buffer_name == "debug":
+            timestamp = time.strftime("%H:%M:%S")
+            
+            # Special handling for received messages
+            if "Received message:" in message:
+                # Extract message details
+                parts = message.split(", ")
+                msg_type = next((p.split("=")[1] for p in parts if p.startswith("type=")), "unknown")
+                msg_from = next((p.split("=")[1] for p in parts if p.startswith("from=")), "unknown")
+                value = next((p.split("=")[1] for p in parts if p.startswith("value=")), "")
+                
+                # Format in JSON-like style
+                self.output_buffers[buffer_name].append(f"{timestamp}: {{")
+                self.output_buffers[buffer_name].append(f"    type: {msg_type},")
+                self.output_buffers[buffer_name].append(f"    value: {value},")
+                self.output_buffers[buffer_name].append(f"    from: {msg_from}")
+                self.output_buffers[buffer_name].append("}")
+                return
+            
+            # Format sending messages
+            if "Sending message:" in message:
+                # Extract message details
+                parts = message.split(", ")
+                msg_type = next((p.split("=")[1] for p in parts if p.startswith("type=")), "unknown")
+                value = next((p.split("=")[1] for p in parts if p.startswith("value=")), "")
+                
+                # Format in JSON-like style
+                self.output_buffers[buffer_name].append(f"{timestamp}: {{")
+                self.output_buffers[buffer_name].append(f"    type: {msg_type},")
+                self.output_buffers[buffer_name].append(f"    value: {value},")
+                self.output_buffers[buffer_name].append(f"    from: localBackend")
+                self.output_buffers[buffer_name].append("}")
+                return
+                
+            # Handle errors
+            if "error" in level.lower():
+                self.output_buffers[buffer_name].append(f"{timestamp}: {{")
+                self.output_buffers[buffer_name].append(f"    ERROR: {message}")
+                self.output_buffers[buffer_name].append("}")
+                return
+                
+            # Handle all other debug messages in JSON format
+            self.output_buffers[buffer_name].append(f"{timestamp}: {{")
+            self.output_buffers[buffer_name].append(f"    type: info,")
+            self.output_buffers[buffer_name].append(f"    value: {message},")
+            self.output_buffers[buffer_name].append(f"    from: system")
+            self.output_buffers[buffer_name].append("}")
+        else:
+            # For non-debug buffers, keep using the old format but without emojis
+            timestamp = time.strftime("%H:%M:%S")
+            self.output_buffers[buffer_name].append(f"{timestamp} {message} ({level})")
         
-        self.output_buffers[buffer_name].append(f"{timestamp} {emoji} {message} ({level})")
-        
-        # Keep buffer size manageable
+        # Keep legacy buffer size manageable
         while len(self.output_buffers[buffer_name]) > 1000:
             self.output_buffers[buffer_name].pop(0)
 
@@ -225,6 +262,7 @@ class ProcessManager:
                         self.socketio_client.disconnect()
                         self.socketio_client = None
                         self.room_joined = False
+                        self.local_connected = False
                     except:
                         pass
                 
@@ -280,7 +318,14 @@ class ProcessManager:
         if service_name == "screenshot":
             return self.screenshot_manager.get_output()
         elif service_name == "debug":
-            return self.output_buffers["debug"]
+            # Use the new message system but return in legacy format for compatibility
+            messages = self.message_manager.get_formatted_messages("debug")
+            
+            # Fall back to the legacy buffer if new system has no messages
+            if not messages:
+                return self.output_buffers["debug"]
+                
+            return messages
         return []
 
     def _monitor_output(self, service_name: str, process: subprocess.Popen):
@@ -328,14 +373,29 @@ class ProcessManager:
     def post_message_to_socket(self, value: str, messageType: str):
         """Post a message to the SocketIO server using standardized format."""
         if not self.socketio_client:
-            return "SocketIO client not connected - Use [R]estart Server in Status view"
+            error_msg = "SocketIO client not connected - Use [R]estart Server in Status view"
+            timestamp = time.strftime("%H:%M:%S")
+            self.output_buffers["debug"].append(f"{timestamp}: {{")
+            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
+            self.output_buffers["debug"].append("}")
+            return error_msg
             
         if not self.socketio_client.connected:
-            return "SocketIO client not connected to server - Use [R]estart Server in Status view"
+            error_msg = "SocketIO client not connected to server - Use [R]estart Server in Status view"
+            timestamp = time.strftime("%H:%M:%S")
+            self.output_buffers["debug"].append(f"{timestamp}: {{")
+            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
+            self.output_buffers["debug"].append("}")
+            return error_msg
             
         try:
-            # Add debug info before sending
-            self._add_to_buffer("debug", f"Sending {messageType} message...", "info")
+            # Add message in JSON format
+            timestamp = time.strftime("%H:%M:%S")
+            self.output_buffers["debug"].append(f"{timestamp}: {{")
+            self.output_buffers["debug"].append(f"    type: {messageType},")
+            self.output_buffers["debug"].append(f"    value: {value},")
+            self.output_buffers["debug"].append(f"    from: localBackend")
+            self.output_buffers["debug"].append("}")
             
             # Standardized message format
             formatted_message = {
@@ -355,30 +415,44 @@ class ProcessManager:
                 time.sleep(0.5)  # Brief wait for callback
                 
                 if not self.room_joined:
-                    return f"Not joined to room '{room}' - messages may not be delivered properly"
+                    error_msg = f"Not joined to room '{room}' - messages may not be delivered properly"
+                    self.message_manager.add_message(
+                        content=error_msg,
+                        level=MessageLevel.ERROR,
+                        category=MessageCategory.SOCKET,
+                        buffer_name="debug"
+                    )
+                    return error_msg
             
             # Send the message
             self.socketio_client.emit('message', formatted_message)
             
-            # Log success
-            status = f"Message sent to room '{room}'"
+            # Add iOS client info if any are connected
             if self.ios_clients_connected > 0:
-                status += f" ({self.ios_clients_connected} iOS client{'s' if self.ios_clients_connected != 1 else ''} online)"
-            self._add_to_buffer("debug", status, messageType)
+                status = f"({self.ios_clients_connected} iOS client{'s' if self.ios_clients_connected != 1 else ''} online)"
+                self.message_manager.add_message(
+                    content=status,
+                    level=MessageLevel.INFO,
+                    category=MessageCategory.SOCKET,
+                    buffer_name="debug"
+                )
+            
             return None
             
         except Exception as e:
-            error_msg = f"Failed to send message: {str(e)}\n"
-            error_msg += f"Socket connected: {self.socketio_client.connected if self.socketio_client else False}\n"
-            error_msg += f"Room joined: {self.room_joined}\n"
-            error_msg += f"Server running: {self.is_process_running('socket')}"
+            error_msg = f"Failed to send message: {str(e)}"
+            
+            # Add error in JSON-like format
+            timestamp = time.strftime("%H:%M:%S")
+            self.output_buffers["debug"].append(f"{timestamp}: {{")
+            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
+            self.output_buffers["debug"].append("}")
+            
             self.logger.error(error_msg)
             return error_msg
 
     def reload_screen(self):
         """Force a reload of the current view's code from disk."""
-        # Note: The actual reload happens in BaseView.reload_view()
-        # This just provides a success indicator and feedback
         self.output_buffers["debug"].append("Reloading view from disk...")
         return True
 

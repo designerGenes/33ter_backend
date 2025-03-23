@@ -4,6 +4,7 @@ import time
 from .base_view import BaseView
 from .color_scheme import *
 import traceback
+from ..message_system import MessageManager, MessageLevel, MessageCategory
 
 class DebugView(BaseView):
     """Debug view for SocketIO messages and client communication."""
@@ -12,6 +13,7 @@ class DebugView(BaseView):
         super().__init__(stdscr, process_manager)
         self.view_name = "debug"
         self.message_form_active = False
+        self.message_manager = MessageManager()  # Get the singleton instance
 
     def draw_content(self):
         """Draw the debug view content."""
@@ -19,10 +21,10 @@ class DebugView(BaseView):
         
         # Draw controls with iOS client status
         ios_clients = self.process_manager.get_ios_client_count()
-        status_text = f"📱 {ios_clients} iOS client{'s' if ios_clients != 1 else ''}"
+        status_text = f"{ios_clients} iOS client{'s' if ios_clients != 1 else ''}"
         status_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
         
-        controls = "📝P:Post  🎯T:Trigger  🔄R:Clear"
+        controls = "P:Post  T:Trigger  R:Clear"
         status_x = self.width - len(status_text) - 2
         
         self.draw_controls(controls, 6)
@@ -32,71 +34,104 @@ class DebugView(BaseView):
         # Draw separator
         self.stdscr.addstr(7, 0, "=" * self.width, curses.color_pair(HEADER_PAIR))
         
-        # Draw messages starting from line 8
-        output_lines = self.process_manager.get_output("debug")
-        if not output_lines:
+        # Get messages from both sources to handle all message formats
+        debug_lines = self.process_manager.output_buffers["debug"]
+        
+        if not debug_lines:
             self.stdscr.addstr(10, (self.width - 13) // 2, "(No messages)", 
                              get_view_color("debug") | curses.A_DIM)
             return
+        
+        # Process output lines
+        y_pos = 8
+        line_index = 0
+        
+        # Get the last N lines that will fit in our display area
+        visible_lines = min(self.height - 9, len(debug_lines))
+        start_index = max(0, len(debug_lines) - visible_lines)
+        
+        # Track processed messages to avoid duplicates
+        processed_messages = set()
+        display_lines = []
+        
+        i = start_index
+        while i < len(debug_lines):
+            line = debug_lines[i]
             
-        for i, line in enumerate(output_lines[-self.height+9:]):
+            # Check if this is a JSON-formatted message
+            if ": {" in line:
+                # Extract timestamp for tracking
+                timestamp = line.split(": {")[0]
+                
+                # Collect all lines for this message
+                message_lines = [line]
+                j = i + 1
+                while j < len(debug_lines) and "}" not in debug_lines[j]:
+                    message_lines.append(debug_lines[j])
+                    j += 1
+                
+                # Add the closing bracket line
+                if j < len(debug_lines):
+                    message_lines.append(debug_lines[j])
+                    
+                # Create a unique signature for this message to avoid duplicates
+                message_signature = "".join(message_lines)
+                if message_signature not in processed_messages:
+                    processed_messages.add(message_signature)
+                    display_lines.extend(message_lines)
+                
+                # Skip ahead to after this message
+                i = j + 1
+            else:
+                # For non-JSON format lines that don't have emojis
+                if not any(emoji in line for emoji in ["📱", "📤", "ℹ️", "⚠️", "❌", "🎯", "📝"]):
+                    display_lines.append(line)
+                i += 1
+        
+        # Now display the filtered lines
+        line_index = 0
+        while line_index < len(display_lines) and y_pos < self.height - 1:
+            line = display_lines[line_index]
+            
             try:
-                y_pos = 8 + i
-                if y_pos >= self.height - 1:
-                    break
+                # Check if this is a JSON-formatted message
+                if ": {" in line:
+                    # Draw the timestamp part
+                    timestamp = line.split(": {")[0]
+                    self.stdscr.addstr(y_pos, 2, timestamp)
+                    self.stdscr.addstr(": {", get_view_color("debug"))
+                    y_pos += 1
                     
-                # Parse line components
-                parts = line.split(" ", 3)
-                if len(parts) == 4:
-                    timestamp, emoji, message, level = parts
-                    level = level.strip("()")
+                    # Process indented content lines until we find a closing bracket
+                    line_index += 1
+                    while line_index < len(display_lines) and "}" not in display_lines[line_index]:
+                        content_line = display_lines[line_index]
+                        
+                        # Check for ERROR key which should be highlighted
+                        if "ERROR:" in content_line:
+                            parts = content_line.split("ERROR:", 1)
+                            self.stdscr.addstr(y_pos, 2, parts[0], get_view_color("debug"))
+                            self.stdscr.addstr("ERROR:", curses.color_pair(STATUS_STOPPED) | curses.A_BOLD)
+                            self.stdscr.addstr(parts[1], curses.color_pair(STATUS_STOPPED))
+                        else:
+                            self.stdscr.addstr(y_pos, 2, content_line, get_view_color("debug"))
+                            
+                        y_pos += 1
+                        line_index += 1
                     
-                    # Draw with appropriate colors
-                    x = 2
-                    self.stdscr.addstr(y_pos, x, timestamp)
-                    x += len(timestamp) + 1
-                    
-                    self.stdscr.addstr(y_pos, x, emoji)
-                    x += len(emoji) + 1
-                    
-                    msg_color = {
-                        'info': curses.color_pair(MENU_PAIR),
-                        'prime': curses.color_pair(SELECTED_VIEW),
-                        'warning': curses.color_pair(STATUS_STOPPED),
-                        'error': curses.color_pair(STATUS_STOPPED) | curses.A_BOLD
-                    }.get(level.lower(), curses.A_NORMAL)
-                    
-                    self.stdscr.addstr(y_pos, x, message, msg_color)
+                    # Draw the closing bracket
+                    if line_index < len(display_lines):
+                        self.stdscr.addstr(y_pos, 2, display_lines[line_index], get_view_color("debug"))
+                        y_pos += 1
                 else:
+                    # For non-JSON format lines, just display them directly
                     self.stdscr.addstr(y_pos, 2, line[:self.width-3])
-                    
+                    y_pos += 1
             except curses.error:
+                # Handle display errors
                 break
-
-    def format_message(self, message):
-        """Format received socket message for display."""
-        if isinstance(message, str):  # Handle error messages
-            timestamp = time.strftime('%H:%M:%S')
-            return f"{timestamp} ❌ [error] {message} (error)"
-            
-        type_icons = {
-            "info": "ℹ️ ",
-            "warning": "⚠️ ",
-            "trigger": "🎯",
-            "ocrResult": "📝"
-        }
-        
-        msg_type = message.get('messageType', 'unknown')
-        msg_from = message.get('from', 'unknown')
-        value = message.get('value', '')
-        
-        # Format array values for ocrResult
-        if isinstance(value, list):
-            value = ', '.join(str(v) for v in value)
-            
-        icon = type_icons.get(msg_type, '❓')
-        timestamp = time.strftime('%H:%M:%S')
-        return f"{timestamp} {icon} [{msg_from}] {value} ({msg_type})"
+                
+            line_index += 1
 
     def handle_input(self, key):
         """Handle debug view specific input"""
@@ -119,14 +154,20 @@ class DebugView(BaseView):
                     if not self.process_manager.get_ios_client_count():
                         error_details += "\nNote: No iOS clients are currently connected to receive the trigger"
                     
-                    self.process_manager.output_buffers["debug"].append(error_details)
-                else:
-                    self.process_manager.output_buffers["debug"].append("Trigger message sent successfully")
+                    # Format error message
+                    timestamp = time.strftime("%H:%M:%S")
+                    self.process_manager.output_buffers["debug"].append(f"{timestamp}: {{")
+                    self.process_manager.output_buffers["debug"].append(f"    ERROR: {error_details}")
+                    self.process_manager.output_buffers["debug"].append("}")
                     
             except Exception as e:
-                error_msg = f"Unexpected error during trigger: {str(e)}\n"
-                error_msg += traceback.format_exc()
-                self.process_manager.output_buffers["debug"].append(error_msg)
+                error_msg = f"Unexpected error during trigger: {str(e)}"
+                
+                # Format error message
+                timestamp = time.strftime("%H:%M:%S")
+                self.process_manager.output_buffers["debug"].append(f"{timestamp}: {{")
+                self.process_manager.output_buffers["debug"].append(f"    ERROR: {error_msg}")
+                self.process_manager.output_buffers["debug"].append("}")
 
     def get_message_input(self):
         """Get and send a new socket message."""
@@ -154,7 +195,7 @@ class DebugView(BaseView):
             win.box()
             win.addstr(0, 2, " Socket Message ", curses.A_BOLD)
             
-            # Draw fields (only two fields now)
+            # Draw fields without emojis
             for i, field in enumerate(fields):
                 y = i * 2 + 1
                 label = f"{field['label']}: "
@@ -164,9 +205,7 @@ class DebugView(BaseView):
                 
                 if "options" in field:
                     value_text = f"< {field['value']} >"
-                    icon = {"info": "ℹ️ ", "warning": "⚠️ ", 
-                           "trigger": "🎯", "ocrResult": "📝"}[field['value']]
-                    win.addstr(y, len(label) + 2, f"{icon}{value_text}", attr)
+                    win.addstr(y, len(label) + 2, value_text, attr)
                 else:
                     win.addstr(y, len(label) + 2, field['value'], attr)
             
@@ -181,14 +220,26 @@ class DebugView(BaseView):
             if ch == 27:  # ESC
                 break
             elif ch == 10:  # Enter
-                if fields[1]['value'].strip():  # Check value field is not empty
+                value = fields[1]['value'].strip()
+                if value:  # Check value field is not empty
+                    msg_type = fields[0]['value']
+                    
+                    # Send the message
                     result = self.process_manager.post_message_to_socket(
-                        value=fields[1]['value'],
-                        messageType=fields[0]['value']
+                        value=value,
+                        messageType=msg_type
                     )
+                    
                     if result:  # Show error message if returned
-                        self.process_manager.output_buffers["debug"].append(result)
+                        # Error messages are handled in post_message_to_socket
+                        pass
                     break
+                else:
+                    # Add error message for empty value
+                    timestamp = time.strftime("%H:%M:%S")
+                    self.process_manager.output_buffers["debug"].append(f"{timestamp}: {{")
+                    self.process_manager.output_buffers["debug"].append(f"    ERROR: Cannot send empty message")
+                    self.process_manager.output_buffers["debug"].append("}")
             elif ch == curses.KEY_UP:
                 current_field = (current_field - 1) % len(fields)
             elif ch == curses.KEY_DOWN:
@@ -209,6 +260,8 @@ class DebugView(BaseView):
 
     def clear_messages(self):
         """Clear the debug message buffer."""
+        # Clear both systems
+        self.message_manager.clear_buffer("debug")
         self.process_manager.output_buffers["debug"].clear()
 
     def get_help_content(self):
@@ -223,19 +276,24 @@ class DebugView(BaseView):
             "?: Show/hide this help",
             "",
             "Message Types:",
-            "ℹ️  Info - Basic information",
-            "🎯 Trigger - Request OCR processing",
-            "📝 OCR Result - Extracted text",
-            "⚠️  Warning - Alert message",
+            "info - Basic information",
+            "trigger - Request OCR processing",
+            "ocrResult - Extracted text",
+            "warning - Alert message",
             "",
             "Message Format:",
             "{",
-            "  messageType: info/warning/trigger/ocrResult",
-            "  from: localBackend/mobileApp",
-            "  value: message content",
+            "  type: (message type),",
+            "  value: (message content),",
+            "  from: (message source)",
+            "}",
+            "",
+            "Error Format:",
+            "{",
+            "  ERROR: (error details)",
             "}",
             "",
             "Notes:",
-            "- Messages show timestamp and source",
+            "- Messages include timestamp",
             "- iOS client count shown in status"
         ]

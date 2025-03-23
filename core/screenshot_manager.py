@@ -19,6 +19,7 @@ from datetime import datetime
 
 from utils import get_config_dir, get_temp_dir, get_logs_dir
 from .ocr_processor import OCRProcessor
+from .message_system import MessageManager, MessageLevel, MessageCategory
 
 class ScreenshotManager:
     """Manages continuous screenshot capture and cleanup.
@@ -44,9 +45,12 @@ class ScreenshotManager:
         self.capture_thread = None
         self.logger = self._setup_logging()
         self.screenshot_interval = 4.0
-        self.output_buffer = []  # Initialize output buffer
-        self.load_screenshot_config()
+        
+        # Initialize both legacy and new message systems
         self.output_buffer = []
+        self.message_manager = MessageManager()
+        
+        self.load_screenshot_config()
         
     def _setup_logging(self):
         """Configure screenshot manager logging."""
@@ -78,6 +82,29 @@ class ScreenshotManager:
 
     def _add_to_buffer(self, message, level="info"):
         """Add a message to the output buffer with timestamp."""
+        # Add to new message system
+        try:
+            msg_level = MessageLevel(level)
+        except ValueError:
+            msg_level = MessageLevel.INFO
+            
+        # Determine category based on message content
+        if "screenshot" in message.lower():
+            category = MessageCategory.SCREENSHOT
+        elif "deleted" in message.lower() or "cleaned" in message.lower():
+            category = MessageCategory.SYSTEM
+        else:
+            category = MessageCategory.SCREENSHOT
+            
+        self.message_manager.add_message(
+            content=message,
+            level=msg_level,
+            category=category,
+            source="screenshot",
+            buffer_name="screenshot"
+        )
+        
+        # Legacy format for backward compatibility
         timestamp = time.strftime("%H:%M:%S")
         emoji = "📸" if "screenshot" in message.lower() else "🗑️" if "deleted" in message.lower() else "ℹ️"
         self.output_buffer.append(f"{timestamp} {emoji} {message} ({level})")
@@ -161,4 +188,11 @@ class ScreenshotManager:
 
     def get_output(self):
         """Get the current output buffer."""
-        return self.output_buffer.copy()
+        # Try to get messages from the new system first
+        messages = self.message_manager.get_formatted_messages("screenshot")
+        
+        # Fall back to legacy buffer if new system has no messages
+        if not messages:
+            return self.output_buffer.copy()
+            
+        return messages
