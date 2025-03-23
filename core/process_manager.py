@@ -6,6 +6,7 @@ import json
 import logging
 import subprocess
 import socketio
+import threading
 from typing import Dict, Optional, List, Union
 from utils import get_logs_dir, get_screenshots_dir, get_temp_dir
 from utils import get_server_config
@@ -35,6 +36,11 @@ class ProcessManager:
         self.socketio_client = None
         self.screenshot_manager = ScreenshotManager()
         self.room_joined = False
+        
+        # OCR processing status tracking
+        self.ocr_processing_active = False
+        self.last_ocr_time = 0
+        self.ocr_lock = threading.Lock()
         
     def _setup_logging(self):
         """Configure process manager logging."""
@@ -115,36 +121,124 @@ class ProcessManager:
                     def connect():
                         self.logger.info("Socket.IO client connected to server")
                         self.local_connected = True
+                        # Log connection status to debug buffer
+                        timestamp = time.strftime("%H:%M:%S")
+                        self.output_buffers["debug"].append(f"{timestamp}: {{")
+                        self.output_buffers["debug"].append(f"    type: info,")
+                        self.output_buffers["debug"].append(f"    value: Local client connected to SocketIO server,")
+                        self.output_buffers["debug"].append(f"    from: system")
+                        self.output_buffers["debug"].append("}")
                     
                     @sio.event
                     def disconnect():
                         self.logger.info("Socket.IO client disconnected from server")
                         self.local_connected = False
                         self.room_joined = False
+                        # Log disconnection to debug buffer
+                        timestamp = time.strftime("%H:%M:%S")
+                        self.output_buffers["debug"].append(f"{timestamp}: {{")
+                        self.output_buffers["debug"].append(f"    type: info,")
+                        self.output_buffers["debug"].append(f"    value: Local client disconnected from SocketIO server,")
+                        self.output_buffers["debug"].append(f"    from: system")
+                        self.output_buffers["debug"].append("}")
                     
                     @sio.on('client_count')
                     def on_client_count(data):
                         if 'count' in data:
                             # Subtract our local connection from count
+                            prev_count = self.ios_clients_connected
                             count = data['count']
                             if self.local_connected and count > 0:
                                 count -= 1
                             self.ios_clients_connected = count
                             self.logger.info(f"iOS clients connected: {self.ios_clients_connected}")
+                            
+                            # Log client count changes
+                            if prev_count != count:
+                                timestamp = time.strftime("%H:%M:%S") 
+                                self.output_buffers["debug"].append(f"{timestamp}: {{")
+                                self.output_buffers["debug"].append(f"    type: info,")
+                                self.output_buffers["debug"].append(f"    value: iOS client count changed: {prev_count} -> {count},")
+                                self.output_buffers["debug"].append(f"    from: system")
+                                self.output_buffers["debug"].append("}")
                     
                     @sio.on('message')
                     def on_message(data):
-                        # Log received messages to debug output in JSON format
-                        if isinstance(data, dict):
-                            msg_type = data.get('messageType', 'unknown')
-                            msg_from = data.get('from', 'unknown')
-                            value = data.get('value', '')
+                        """Handle incoming socket messages with improved logging and processing."""
+                        try:
+                            # Log detailed information about the received message
+                            self.logger.info(f"SOCKET MESSAGE RECEIVED: {json.dumps(data)}")
                             
+                            # Log received messages to debug output in JSON format
+                            if isinstance(data, dict):
+                                msg_type = data.get('messageType', 'unknown')
+                                msg_from = data.get('from', 'unknown')
+                                value = data.get('value', '')
+                                
+                                # Generate consistent timestamp for this message
+                                timestamp = time.strftime("%H:%M:%S")
+                                
+                                # Log more detailed info for debugging
+                                log_message = f"Message received - Type: {msg_type}, From: {msg_from}, Value: {value}"
+                                self.logger.info(log_message)
+                                
+                                # Critical: Check if this message is from an external source (not our own client)
+                                # and log it, but don't modify the message value
+                                if msg_from != "localBackend":
+                                    # This is a message from an external source
+                                    self.logger.info(f"EXTERNAL MESSAGE from {msg_from}: {value}")
+                                
+                                # Add message to debug buffer without modifying the value
+                                self.output_buffers["debug"].append(f"{timestamp}: {{")
+                                self.output_buffers["debug"].append(f"    type: {msg_type},")
+                                self.output_buffers["debug"].append(f"    value: {value},")
+                                self.output_buffers["debug"].append(f"    from: {msg_from}")
+                                self.output_buffers["debug"].append("}")
+                                
+                                # Add to new message system too
+                                self.message_manager.add_message(
+                                    content=f"Message: {value}",
+                                    level=MessageLevel.INFO if msg_type != "warning" else MessageLevel.WARNING,
+                                    category=MessageCategory.SOCKET,
+                                    source=msg_from,
+                                    buffer_name="debug",
+                                    metadata={"type": msg_type, "value": value}
+                                )
+                                
+                                # If message is of type 'trigger', process the latest screenshot
+                                if msg_type == 'trigger':
+                                    # Rate limiting - check last OCR processing time
+                                    current_time = time.time()
+                                    if hasattr(self, 'last_ocr_time') and (current_time - self.last_ocr_time < 2.0):
+                                        # Less than 2 seconds since last OCR, skip
+                                        timestamp = time.strftime("%H:%M:%S")
+                                        self.output_buffers["debug"].append(f"{timestamp}: {{")
+                                        self.output_buffers["debug"].append(f"    type: info,")
+                                        self.output_buffers["debug"].append(f"    value: Ignoring rapid trigger request (rate limited),")
+                                        self.output_buffers["debug"].append(f"    from: system")
+                                        self.output_buffers["debug"].append("}")
+                                        return
+                                        
+                                    self.last_ocr_time = current_time
+                                    
+                                    # Add info message about triggering OCR
+                                    timestamp = time.strftime("%H:%M:%S")
+                                    self.output_buffers["debug"].append(f"{timestamp}: {{")
+                                    self.output_buffers["debug"].append(f"    type: info,")
+                                    self.output_buffers["debug"].append(f"    value: Received trigger message. Processing latest screenshot...,")
+                                    self.output_buffers["debug"].append(f"    from: system")
+                                    self.output_buffers["debug"].append("}")
+                                    
+                                    # Process in the main thread to avoid threading issues with SocketIO
+                                    self.process_and_send_ocr_result()
+                        except Exception as e:
+                            # Log any errors during message processing
+                            error_msg = f"Error processing received message: {str(e)}"
+                            self.logger.error(error_msg)
+                            self.logger.error(traceback.format_exc())
                             timestamp = time.strftime("%H:%M:%S")
                             self.output_buffers["debug"].append(f"{timestamp}: {{")
-                            self.output_buffers["debug"].append(f"    type: {msg_type},")
-                            self.output_buffers["debug"].append(f"    value: {value},")
-                            self.output_buffers["debug"].append(f"    from: {msg_from}")
+                            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
                             self.output_buffers["debug"].append("}")
                     
                     url = f"http://{client_host}:{port}"
@@ -465,3 +559,69 @@ class ProcessManager:
                 "screenshot": []
             }
         return self.output_queues
+
+    def process_and_send_ocr_result(self):
+        """Process the latest screenshot with OCR and send results to SocketIO room."""
+        # Use a lock to prevent concurrent OCR processing
+        if not self.ocr_lock.acquire(blocking=False):
+            timestamp = time.strftime("%H:%M:%S")
+            self.output_buffers["debug"].append(f"{timestamp}: {{")
+            self.output_buffers["debug"].append(f"    type: info,")
+            self.output_buffers["debug"].append(f"    value: OCR processing already in progress. Skipping.,")
+            self.output_buffers["debug"].append(f"    from: system")
+            self.output_buffers["debug"].append("}")
+            return False
+            
+        try:
+            # Check for screenshots
+            screenshots_dir = get_screenshots_dir()
+            screenshots = glob.glob(os.path.join(screenshots_dir, "*.png"))
+            
+            if not screenshots:
+                timestamp = time.strftime("%H:%M:%S")
+                self.output_buffers["debug"].append(f"{timestamp}: {{")
+                self.output_buffers["debug"].append(f"    ERROR: No screenshots available for OCR processing")
+                self.output_buffers["debug"].append("}")
+                return False
+            
+            # Get OCR result
+            ocr_result = self.screenshot_manager.process_latest_screenshot()
+            
+            if not ocr_result or not isinstance(ocr_result, str) or not ocr_result.strip():
+                # Log error if OCR failed or returned no text
+                timestamp = time.strftime("%H:%M:%S")
+                self.output_buffers["debug"].append(f"{timestamp}: {{")
+                self.output_buffers["debug"].append(f"    ERROR: OCR processing failed or no text found")
+                self.output_buffers["debug"].append("}")
+                return False
+            
+            # Format OCR result - remove extra whitespace and ensure it's a clean string
+            formatted_result = ' '.join(ocr_result.strip().split())
+            
+            # Send OCR result to SocketIO room
+            self.post_message_to_socket(
+                value=formatted_result,
+                messageType="ocrResult"
+            )
+            
+            # Log success
+            timestamp = time.strftime("%H:%M:%S")
+            preview = formatted_result[:50] + "..." if len(formatted_result) > 50 else formatted_result
+            self.output_buffers["debug"].append(f"{timestamp}: {{")
+            self.output_buffers["debug"].append(f"    type: info,")
+            self.output_buffers["debug"].append(f"    value: OCR processing successful. Text preview: {preview},")
+            self.output_buffers["debug"].append(f"    from: system")
+            self.output_buffers["debug"].append("}")
+            
+            return True
+        except Exception as e:
+            # Log error
+            timestamp = time.strftime("%H:%M:%S")
+            error_msg = f"OCR processing error: {str(e)}"
+            self.output_buffers["debug"].append(f"{timestamp}: {{")
+            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
+            self.output_buffers["debug"].append("}")
+            self.logger.error(error_msg)
+            return False
+        finally:
+            self.ocr_lock.release()

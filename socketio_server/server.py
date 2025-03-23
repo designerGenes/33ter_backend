@@ -220,11 +220,14 @@ async def message(sid, data):
             return error
             
         logger.info(f"Message received: {data['messageType']} from {data['from']}")
+        logger.debug(f"Message content: {data}")
         
         # Broadcast to room
         if current_room:
             logger.debug(f"Broadcasting message to room {current_room}")
-            await sio.emit('message', data, room=current_room)
+            # Make sure it's sent to EVERYONE in the room, including the original sender
+            await sio.emit('message', data)  # Broadcast to all clients, not just room members
+            logger.info(f"Message broadcast successful to all clients")
             return None  # Success case
             
         error = "No room set for message broadcast"
