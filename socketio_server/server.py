@@ -137,11 +137,9 @@ async def join_room(sid, data):
     
     # Send welcome message to all clients (removed iOS check)
     await sio.emit('message', {
-        'type': 'info',
-        'data': {
-            'message': f'Connected to 33ter server in room: {room}',
-            'timestamp': datetime.now().isoformat()
-        }
+        'messageType': 'info',
+        'value': f'Connected to 33ter server in room: {room}',
+        'from': 'localBackend',
     }, room=sid)
     
     await broadcast_client_count()
@@ -183,11 +181,9 @@ async def ocr_result(sid, data):
     except Exception as e:
         logger.error(f"Error broadcasting OCR result: {e}")
         await sio.emit('message', {
-            'type': 'error',
-            'data': {
-                'message': 'Failed to process OCR result',
-                'timestamp': datetime.now().isoformat()
-            }
+            'messageType': 'warning',
+            'value': 'Failed to process OCR result',
+            'from': 'localBackend',
         })
 
 @sio.event
