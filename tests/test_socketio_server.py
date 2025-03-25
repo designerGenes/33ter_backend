@@ -148,7 +148,7 @@ async def test_ocr_result_handling(connected_client, test_config):
             print(f"Received messages so far: {received_messages}")  # Add debug logging
             raise
             
-        messages = [msg for msg in received_messages if msg['type'] == 'prime']
+        messages = [msg for msg in received_messages if msg['type'] == 'codeSolution']
         assert len(messages) > 0, "No OCR result message received"
         assert messages[-1]['data']['text'] == test_text
         
