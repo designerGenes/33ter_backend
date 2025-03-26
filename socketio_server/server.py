@@ -166,17 +166,28 @@ async def ocr_result(sid, data):
     
     try:
         text = data[0].get('text', '')
+        
+        # Create a preview with just the first two lines
+        lines = text.splitlines()
+        preview_lines = lines[:2]
+        preview_text = '\n'.join(preview_lines)
+        
+        # Add an indicator if there's more text
+        if len(lines) > 2:
+            preview_text += "\n[...more lines not shown...]"
+        
         message = {
             'type': 'codeSolution',
             'data': {
-                'text': text,
+                'text': preview_text,
+                'fullText': text,  # Include the full text as well
                 'timestamp': datetime.now().isoformat()
             }
         }
         
         # Broadcast to sender's room and current room
         await sio.emit('message', message)  # Changed to broadcast to all
-        logger.info(f"OCR result broadcast successful: {len(text)} chars")
+        logger.info(f"OCR result preview broadcast successful: {len(preview_text)}/{len(text)} chars")
         
     except Exception as e:
         logger.error(f"Error broadcasting OCR result: {e}")

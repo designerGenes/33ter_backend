@@ -7,6 +7,7 @@ import logging
 import subprocess
 import socketio
 import threading
+import traceback  # Add this missing import
 from typing import Dict, Optional, List, Union
 from utils import get_logs_dir, get_screenshots_dir, get_temp_dir
 from utils import get_server_config
@@ -42,6 +43,9 @@ class ProcessManager:
         self.last_ocr_time = 0
         self.ocr_lock = threading.Lock()
         
+        # Maximum message length to display in debug view
+        self.max_display_length = 50  # Increased to a reasonable value
+    
     def _setup_logging(self):
         """Configure process manager logging."""
         log_file = os.path.join(get_logs_dir(), "process_manager.log")
@@ -58,6 +62,15 @@ class ProcessManager:
             logger.addHandler(handler)
         
         return logger
+
+    def _truncate_message(self, message: str) -> str:
+        """Truncate long messages for display purposes."""
+        if not message:  # Handle empty messages
+            return ""
+            
+        if len(message) > self.max_display_length:
+            return message[:self.max_display_length] + "... [content truncated]"
+        return message
 
     def start_service(self, service_name: str):
         """Start a specific service process."""
@@ -175,34 +188,37 @@ class ProcessManager:
                                 msg_from = data.get('from', 'unknown')
                                 value = data.get('value', '')
                                 
+                                # Store the original value but display a truncated version
+                                display_value = self._truncate_message(value)
+                                
                                 # Generate consistent timestamp for this message
                                 timestamp = time.strftime("%H:%M:%S")
                                 
                                 # Log more detailed info for debugging
-                                log_message = f"Message received - Type: {msg_type}, From: {msg_from}, Value: {value}"
+                                log_message = f"Message received - Type: {msg_type}, From: {msg_from}, Value: {display_value}"
                                 self.logger.info(log_message)
                                 
                                 # Critical: Check if this message is from an external source (not our own client)
                                 # and log it, but don't modify the message value
                                 if msg_from != "localBackend":
                                     # This is a message from an external source
-                                    self.logger.info(f"EXTERNAL MESSAGE from {msg_from}: {value}")
+                                    self.logger.info(f"EXTERNAL MESSAGE from {msg_from}: {display_value}")
                                 
-                                # Add message to debug buffer without modifying the value
+                                # Add message to debug buffer with truncated value for display
                                 self.output_buffers["debug"].append(f"{timestamp}: {{")
                                 self.output_buffers["debug"].append(f"    type: {msg_type},")
-                                self.output_buffers["debug"].append(f"    value: {value},")
+                                self.output_buffers["debug"].append(f"    value: {display_value},")  # Remove the additional slicing
                                 self.output_buffers["debug"].append(f"    from: {msg_from}")
                                 self.output_buffers["debug"].append("}")
                                 
                                 # Add to new message system too
                                 self.message_manager.add_message(
-                                    content=f"Message: {value}",
+                                    content=f"Message: {display_value}",
                                     level=MessageLevel.INFO if msg_type != "warning" else MessageLevel.WARNING,
                                     category=MessageCategory.SOCKET,
                                     source=msg_from,
                                     buffer_name="debug",
-                                    metadata={"type": msg_type, "value": value}
+                                    metadata={"type": msg_type, "value": display_value}
                                 )
                                 
                                 # If message is of type 'trigger', process the latest screenshot
@@ -299,10 +315,13 @@ class ProcessManager:
                 msg_from = next((p.split("=")[1] for p in parts if p.startswith("from=")), "unknown")
                 value = next((p.split("=")[1] for p in parts if p.startswith("value=")), "")
                 
+                # Truncate long values for display
+                display_value = self._truncate_message(value)
+                
                 # Format in JSON-like style
                 self.output_buffers[buffer_name].append(f"{timestamp}: {{")
                 self.output_buffers[buffer_name].append(f"    type: {msg_type},")
-                self.output_buffers[buffer_name].append(f"    value: {value},")
+                self.output_buffers[buffer_name].append(f"    value: {display_value},")  # Remove the additional slicing
                 self.output_buffers[buffer_name].append(f"    from: {msg_from}")
                 self.output_buffers[buffer_name].append("}")
                 return
@@ -314,31 +333,40 @@ class ProcessManager:
                 msg_type = next((p.split("=")[1] for p in parts if p.startswith("type=")), "unknown")
                 value = next((p.split("=")[1] for p in parts if p.startswith("value=")), "")
                 
+                # Truncate long values for display
+                display_value = self._truncate_message(value)
+                
                 # Format in JSON-like style
                 self.output_buffers[buffer_name].append(f"{timestamp}: {{")
                 self.output_buffers[buffer_name].append(f"    type: {msg_type},")
-                self.output_buffers[buffer_name].append(f"    value: {value},")
+                self.output_buffers[buffer_name].append(f"    value: {display_value},")  # Remove the additional slicing
                 self.output_buffers[buffer_name].append(f"    from: localBackend")
                 self.output_buffers[buffer_name].append("}")
                 return
                 
             # Handle errors
             if "error" in level.lower():
+                error_msg = self._truncate_message(message)  # Also truncate error messages
                 self.output_buffers[buffer_name].append(f"{timestamp}: {{")
-                self.output_buffers[buffer_name].append(f"    ERROR: {message}")
+                self.output_buffers[buffer_name].append(f"    ERROR: {error_msg}")
                 self.output_buffers[buffer_name].append("}")
                 return
                 
             # Handle all other debug messages in JSON format
+            # Truncate long messages for display
+            display_message = self._truncate_message(message)
+            
             self.output_buffers[buffer_name].append(f"{timestamp}: {{")
             self.output_buffers[buffer_name].append(f"    type: info,")
-            self.output_buffers[buffer_name].append(f"    value: {message},")
+            self.output_buffers[buffer_name].append(f"    value: {display_message},")  # Remove the additional slicing
             self.output_buffers[buffer_name].append(f"    from: system")
             self.output_buffers[buffer_name].append("}")
         else:
             # For non-debug buffers, keep using the old format but without emojis
             timestamp = time.strftime("%H:%M:%S")
-            self.output_buffers[buffer_name].append(f"{timestamp} {message} ({level})")
+            # Also truncate these messages
+            display_message = self._truncate_message(message)
+            self.output_buffers[buffer_name].append(f"{timestamp} {display_message} ({level})")
         
         # Keep legacy buffer size manageable
         while len(self.output_buffers[buffer_name]) > 1000:
@@ -483,19 +511,20 @@ class ProcessManager:
             return error_msg
             
         try:
-            # Add message in JSON format
+            # Add message in JSON format with truncated display value
+            display_value = self._truncate_message(value)
             timestamp = time.strftime("%H:%M:%S")
             self.output_buffers["debug"].append(f"{timestamp}: {{")
             self.output_buffers["debug"].append(f"    type: {messageType},")
-            self.output_buffers["debug"].append(f"    value: {value},")
+            self.output_buffers["debug"].append(f"    value: {display_value},")
             self.output_buffers["debug"].append(f"    from: localBackend")
             self.output_buffers["debug"].append("}")
             
-            # Standardized message format
+            # Standardized message format - send full value to Socket.IO
             formatted_message = {
                 "messageType": messageType,
                 "from": "localBackend",
-                "value": value
+                "value": value  # Use the original, non-truncated value
             }
             
             # Get room from config
@@ -598,18 +627,18 @@ class ProcessManager:
             # Format OCR result - remove extra whitespace and ensure it's a clean string
             formatted_result = ' '.join(ocr_result.strip().split())
             
-            # Send OCR result to SocketIO room
+            # Send OCR result to SocketIO room (full result)
             self.post_message_to_socket(
                 value=formatted_result,
                 messageType="ocrResult"
             )
             
-            # Log success
+            # Log success with truncated preview - no need for additional display formatting
             timestamp = time.strftime("%H:%M:%S")
-            preview = formatted_result[:50] + "..." if len(formatted_result) > 50 else formatted_result
+            preview = self._truncate_message(formatted_result)
             self.output_buffers["debug"].append(f"{timestamp}: {{")
             self.output_buffers["debug"].append(f"    type: info,")
-            self.output_buffers["debug"].append(f"    value: OCR processing successful. Text preview: {preview},")
+            self.output_buffers["debug"].append(f"    value: OCR processing successful. Text: {preview},")
             self.output_buffers["debug"].append(f"    from: system")
             self.output_buffers["debug"].append("}")
             
