@@ -167,7 +167,7 @@ async def ocr_result(sid, data):
     try:
         text = data[0].get('text', '')
         message = {
-            'type': 'prime',
+            'type': 'codeSolution',
             'data': {
                 'text': text,
                 'timestamp': datetime.now().isoformat()

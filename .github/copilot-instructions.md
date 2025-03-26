@@ -18,8 +18,8 @@ and I say "Update the two sections of our app to communicate", you should interp
 "Do NOT change the python app's communication method.  DO change the iOS app to use SocketIO based on the configuration currently present in the python app."
 
 ```The current frozen list:```
-- 1. the code inside the "functions" folder.  This is our Azure function.
-- 2. the code inside the "app" folder.  This is our Python local backend
+<!-- - 1. the code inside the "functions" folder.  This is our Azure function.
+- 2. the code inside the "app" folder.  This is our Python local backend -->
 
 ## The @FixList command
 Whenever you get a command that is just "@FixList", you must interpret this to mean "scan the 'tofixlist.md' file inside the closest '.github' directory.  This file contains small bugs and desired improvements I have found but not gotten around to fixing yet.  Take the first line item from the list which is not prefaced with '  __DONE__ '  and treat it as a prompt.  When you have completed addressing that prompt, add '  __DONE__  ' to the start of that list item in the relevant 'tofixlist.md' file. 

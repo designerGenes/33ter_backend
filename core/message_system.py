@@ -17,7 +17,7 @@ class MessageLevel(Enum):
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
-    PRIME = "prime"
+    CODESOLUTION = "codeSolution"
 
 
 class MessageCategory(Enum):
@@ -70,7 +70,7 @@ class Message:
             return "⚠️"
         elif self.level == MessageLevel.INFO:
             return "ℹ️"
-        elif self.level == MessageLevel.PRIME:
+        elif self.level == MessageLevel.CODESOLUTION:
             return "✨"
         elif self.level == MessageLevel.DEBUG:
             return "🔍"

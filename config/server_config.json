@@ -4,5 +4,5 @@
     "room": "33ter_room",
     "debug": true,
     "allow_cors": true,
-    "cors_origins": ["0.0.0.0:*", "0.0.0.0:*", "localhost:*"]
+    "cors_origins": ["*", "0.0.0.0:*", "0.0.0.0:*", "localhost:*"]
 }
