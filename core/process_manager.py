@@ -183,9 +183,6 @@ class ProcessManager:
             return
 
         self.logger.info("Socket.IO monitor thread started.")
-        # More robust startup message detection
-        startup_patterns = ["Running on http://", "Starting Socket.IO server on"]
-        connection_attempted_this_cycle = False  # Prevent multiple attempts per detection
 
         while not self.socketio_stop_event.is_set():
             if self.socketio_process.poll() is not None:
@@ -195,7 +192,6 @@ class ProcessManager:
                 if self.internal_sio_connected.is_set():
                     self.logger.info("Marking internal client as disconnected due to server process termination.")
                     self.internal_sio_connected.clear()
-                connection_attempted_this_cycle = False  # Reset flag
                 break
 
             reads = [self.socketio_process.stdout, self.socketio_process.stderr]
@@ -208,16 +204,6 @@ class ProcessManager:
                         if fd is self.socketio_process.stdout:
                             self.logger.info(f"SocketIO Server STDOUT: {line}")
                             self._add_to_buffer("debug", f"SERVER_STDOUT: {line}", "info")
-
-                            is_startup_msg = any(pattern in line for pattern in startup_patterns)
-
-                            # Check if server seems ready and we haven't tried connecting yet in this cycle
-                            # and the internal client isn't already connected or trying to connect
-                            if is_startup_msg and not connection_attempted_this_cycle and not self.internal_sio_connected.is_set() and \
-                               (not self.internal_sio_connect_thread or not self.internal_sio_connect_thread.is_alive()):
-                                self.logger.info("Socket.IO server startup message detected. Initiating internal client connection.")
-                                self._start_internal_client_connection()
-                                connection_attempted_this_cycle = True  # Mark that we tried connecting
 
                         elif fd is self.socketio_process.stderr:
                             self.logger.warning(f"SocketIO Server STDERR: {line}")
@@ -242,7 +228,6 @@ class ProcessManager:
             if self.internal_sio_connected.is_set():
                 self.logger.info("Marking internal client disconnected as server process exited.")
                 self.internal_sio_connected.clear()
-        connection_attempted_this_cycle = False  # Reset flag
 
     def stop_socketio_server(self):
         """Stop the Socket.IO server process."""
@@ -469,9 +454,15 @@ class ProcessManager:
         """Start all managed services."""
         self.logger.info("Starting all services...")
         self.start_socketio_server()
-        time.sleep(1)
+        # Wait a bit longer for the server process to initialize before attempting client connection
+        self.logger.info("Waiting 2 seconds for server to initialize...")
+        time.sleep(2.0)
+        # Explicitly attempt internal client connection
+        self.logger.info("Attempting initial internal client connection...")
+        self._start_internal_client_connection()
+        # Start screenshot manager (can start regardless of client connection)
         self.start_screenshot_manager()
-        self.logger.info("All services started.")
+        self.logger.info("All service start sequences initiated.")
 
     def stop_all(self):
         """Stop all managed services gracefully."""
@@ -520,6 +511,7 @@ class ProcessManager:
 
         # --- Add detailed check logging ---
         client_exists = self.internal_sio_client is not None
+        self._add_to_buffer("debug", f"Internal client exists: {client_exists}", "info")
         event_set = self.internal_sio_connected.is_set()
         client_connected_prop = self.internal_sio_client.connected if client_exists else False
         self.logger.debug(f"OCR Trigger Check: Client Exists={client_exists}, Event Set={event_set}, Client Property Connected={client_connected_prop}")
@@ -573,4 +565,3 @@ class ProcessManager:
                 self.logger.info("Attempting to reconnect internal client as server process is running.")
                 self._start_internal_client_connection()
             return False
-        # Removed redundant 'else' block as the case of ocr_text not being a string is handled earlier

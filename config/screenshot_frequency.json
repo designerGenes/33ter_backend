@@ -1,6 +1,1 @@
-{
-  "frequency": 2.0,
-  "min_frequency": 0.5,
-  "max_frequency": 5.0,
-  "max_age": 60
-}
+{"frequency": 2.0}
