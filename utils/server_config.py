@@ -21,7 +21,7 @@ Key Features:
 """
 
 import os
-import sys  # Import sys for stderr stream handler
+import sys
 import json
 import logging
 from pathlib import Path
@@ -29,41 +29,30 @@ from typing import Dict, Any, Optional
 import copy
 
 # Explicitly get the logger for this module's name
-logger = logging.getLogger(__name__)  # Ensures logger name is 'utils.server_config'
+logger = logging.getLogger(__name__)
 
 # --- Add a basic handler IF NONE EXIST ---
-# This ensures that if this module is imported and used BEFORE
-# the main application's logging is configured, its messages
-# still go somewhere (stderr) and are identifiable.
 if not logger.hasHandlers():
     handler = logging.StreamHandler(sys.stderr)
-    formatter = logging.Formatter('%(name)s:%(levelname)s:%(message)s')  # Simple format
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
-    # Set a default level for this early handler if needed, e.g., WARNING or INFO
-    # logger.setLevel(logging.INFO)  # Uncomment if you want early INFO messages too
-    logger.propagate = False  # Prevent messages from going to root logger if it's configured later
-
-# Now import other local modules AFTER setting up the logger handler
-try:
-    from .path_config import get_config_dir
-except ImportError as e:
-    # Log import error using the logger we just configured
-    logger.critical(f"Failed to import path_config: {e}. Server config paths will be incorrect.", exc_info=True)
-    # Define a fallback if path_config is critical
-    def get_config_dir():
-        logger.error("Using fallback config directory path due to import error.")
-        # Provide a sensible fallback, e.g., relative path
-        return os.path.join(os.path.dirname(__file__), '..', 'config')
+    # Set a default level for this logger if run standalone or before main config
+    # Avoid setting propagate=False unless you are sure
+    logger.setLevel(logging.INFO)
 
 
-DEFAULT_CONFIG = {
+# Define the configuration directory relative to this file
+CONFIG_DIR = Path(__file__).parent.parent / 'config'
+SERVER_CONFIG_FILE = CONFIG_DIR / 'server_config.json'
+
+# Default configuration structure
+DEFAULT_CONFIG: Dict[str, Any] = {
     "server": {
         "host": "0.0.0.0",
         "port": 5348,
         "room": "33ter_room",
-        # More specific defaults might be safer than "*" if "*" causes issues
-        "cors_origins": ["http://localhost:5348", "http://0.0.0.0:5348", "*"],
+        "cors_origins": ["*"],
         "log_level": "INFO"
     },
     "health_check": {
@@ -72,111 +61,116 @@ DEFAULT_CONFIG = {
     }
 }
 
-# --- Configuration Loading ---
-def get_server_config() -> Dict[str, Any]:
-    """Load server configuration from file, merging with defaults."""
-    config_file = os.path.join(get_config_dir(), "server_config.json")
-    # Start with a deep copy of defaults
-    loaded_config = copy.deepcopy(DEFAULT_CONFIG)
-    logger.debug(f"Attempting to load server config from: {config_file}")  # Use named logger
+# In-memory cache for the configuration
+_config_cache: Optional[Dict[str, Any]] = None
 
-    if os.path.exists(config_file):
+def _deep_merge_dicts(source: Dict[str, Any], destination: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge source dict into destination dict."""
+    for key, value in source.items():
+        if isinstance(value, dict):
+            # Get node or create one
+            node = destination.setdefault(key, {})
+            _deep_merge_dicts(value, node)
+        else:
+            destination[key] = value
+    return destination
+
+def _load_config() -> Dict[str, Any]:
+    """Loads configuration from file, merges with defaults, handles errors."""
+    global _config_cache
+    config = copy.deepcopy(DEFAULT_CONFIG) # Start with defaults
+
+    if SERVER_CONFIG_FILE.exists():
         try:
-            with open(config_file, 'r') as f:
-                user_config = json.load(f)
-                logger.debug(f"Successfully loaded user config from {config_file}")
-                # Deep merge user config into defaults
-                _deep_merge(loaded_config, user_config)
+            with open(SERVER_CONFIG_FILE, 'r') as f:
+                loaded_config = json.load(f)
+                logger.debug(f"Raw config loaded from {SERVER_CONFIG_FILE}: {loaded_config}") # Added logging
+                if isinstance(loaded_config, dict):
+                    config = _deep_merge_dicts(loaded_config, config)
+                else:
+                    logger.error(f"Invalid config format in {SERVER_CONFIG_FILE}. Expected a dictionary, got {type(loaded_config)}. Using defaults.")
+                    # Reset to defaults if file format is wrong
+                    config = copy.deepcopy(DEFAULT_CONFIG)
         except json.JSONDecodeError as e:
-            # Use the explicitly named logger
-            logger.error(f"Error decoding JSON from {config_file}: {e}. Using default config.", exc_info=True)
-            return copy.deepcopy(DEFAULT_CONFIG)
+            logger.error(f"Error decoding JSON from {SERVER_CONFIG_FILE}: {e}. Using default configuration.")
+            # Reset to defaults on JSON error
+            config = copy.deepcopy(DEFAULT_CONFIG)
         except Exception as e:
-            # Use the explicitly named logger
-            logger.error(f"Error reading config file {config_file}: {e}. Using default config.", exc_info=True)
-            return copy.deepcopy(DEFAULT_CONFIG)
+            logger.error(f"Unexpected error loading config from {SERVER_CONFIG_FILE}: {e}. Using default configuration.")
+            # Reset to defaults on other errors
+            config = copy.deepcopy(DEFAULT_CONFIG)
     else:
-        # Use the explicitly named logger
-        logger.warning(f"Config file not found at {config_file}. Using default config and attempting to save it.")
-        try:
-            save_server_config(loaded_config)  # Save defaults if file doesn't exist
-        except Exception as e:
-            # Use the explicitly named logger
-            logger.error(f"Failed to save default config to {config_file}: {e}", exc_info=True)
+        logger.warning(f"Configuration file not found at {SERVER_CONFIG_FILE}. Creating with default settings.")
+        save_server_config(config) # Save defaults if file doesn't exist
 
-    # --- Validation ---
-    # Ensure critical keys exist after merge, falling back to defaults if necessary
-    if 'server' not in loaded_config:
-        # Use the explicitly named logger
-        logger.warning("Missing 'server' section in config, restoring from defaults.")
-        loaded_config['server'] = copy.deepcopy(DEFAULT_CONFIG['server'])
-    # Ensure 'server' is a dict before accessing subkeys
-    server_dict = loaded_config.get('server', {})
-    if not isinstance(server_dict, dict):
-        logger.warning("'server' key exists but is not a dictionary, restoring from defaults.")
-        loaded_config['server'] = copy.deepcopy(DEFAULT_CONFIG['server'])
-        server_dict = loaded_config['server']  # Update local reference
+    _config_cache = config
+    logger.debug(f"Final merged config: {_config_cache}") # Added logging
+    return _config_cache
 
-    if 'host' not in server_dict:
-        # Use the explicitly named logger
-        logger.warning("Missing 'host' in server config, restoring from default.")
-        loaded_config['server']['host'] = DEFAULT_CONFIG['server']['host']
-    if 'port' not in server_dict:
-        # Use the explicitly named logger
-        logger.warning("Missing 'port' in server config, restoring from default.")
-        loaded_config['server']['port'] = DEFAULT_CONFIG['server']['port']
-    if 'cors_origins' not in server_dict:
-        # Use the explicitly named logger
-        logger.warning("Missing 'cors_origins' in server config, restoring from default.")
-        loaded_config['server']['cors_origins'] = DEFAULT_CONFIG['server']['cors_origins']
+def get_server_config() -> Dict[str, Any]:
+    """Returns the current server configuration, loading if necessary."""
+    # Always reload from file for now to ensure freshness during debugging
+    # if _config_cache is None:
+    #     _load_config()
+    # return _config_cache if _config_cache is not None else copy.deepcopy(DEFAULT_CONFIG)
+    return _load_config() # Force reload on each call during debugging
 
-    logger.debug(f"Final loaded config: {json.dumps(loaded_config, indent=2)}")
-    return loaded_config
-
-# --- Configuration Saving ---
 def save_server_config(config_data: Dict[str, Any]) -> bool:
-    """Save server configuration to file."""
-    config_file = os.path.join(get_config_dir(), "server_config.json")
+    """Saves the configuration data to the file."""
+    global _config_cache
     try:
-        os.makedirs(os.path.dirname(config_file), exist_ok=True)
-        with open(config_file, 'w') as f:
+        # Ensure the config directory exists
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(SERVER_CONFIG_FILE, 'w') as f:
             json.dump(config_data, f, indent=2)
-        # Use the explicitly named logger
-        logger.info(f"Server configuration saved to {config_file}")
+        _config_cache = copy.deepcopy(config_data) # Update cache after successful save
+        logger.info(f"Server configuration saved to {SERVER_CONFIG_FILE}")
         return True
     except Exception as e:
-        # Use the explicitly named logger
-        logger.error(f"Error saving config file {config_file}: {e}", exc_info=True)
+        logger.error(f"Failed to save server configuration to {SERVER_CONFIG_FILE}: {e}")
         return False
 
-# --- Configuration Update ---
-def update_server_config(updates: Dict[str, Any]) -> Dict[str, Any]:
-    """Update the server configuration file with new values."""
-    current_config = get_server_config()
-    _deep_merge(current_config, updates)
-    if save_server_config(current_config):
-        return current_config
-    else:
-        # Use the explicitly named logger
-        logger.error("Failed to save updated configuration, returning previous state.")
-        return get_server_config()
-
-# --- Helper for deep merging dictionaries ---
-def _deep_merge(source: Dict, destination: Dict):
-    """
-    Deep merge `destination` dict into `source` dict.
-    Modifies `source` in place.
-    """
-    for key, value in destination.items():
-        if isinstance(value, dict):
-            node = source.setdefault(key, {})
-            # Ensure node is a dict before merging into it
-            if isinstance(node, dict):
-                _deep_merge(node, value)
+def update_config_value(key_path: str, value: Any) -> bool:
+    """Updates a specific configuration value using a dot-separated path."""
+    config = get_server_config()
+    keys = key_path.split('.')
+    current_level = config
+    try:
+        for i, key in enumerate(keys):
+            if i == len(keys) - 1:
+                current_level[key] = value
             else:
-                # Handle case where source has a non-dict value at the key
-                logger.warning(f"Overwriting non-dict value at key '{key}' during deep merge.")
-                source[key] = value  # Overwrite with the new dict
-        else:
-            source[key] = value
-    return source
+                current_level = current_level.setdefault(key, {})
+                if not isinstance(current_level, dict):
+                    logger.error(f"Invalid path for update: '{key}' in '{key_path}' is not a dictionary.")
+                    return False
+        return save_server_config(config)
+    except KeyError:
+        logger.error(f"Invalid key path for update: '{key_path}'")
+        return False
+    except Exception as e:
+        logger.error(f"Error updating config value for '{key_path}': {e}")
+        return False
+
+# Example usage (optional, for testing)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG) # Enable debug logging for testing
+    logger.info("Testing server_config module...")
+    initial_config = get_server_config()
+    logger.info(f"Initial config: {json.dumps(initial_config, indent=2)}")
+
+    # Test update
+    # update_success = update_config_value("server.port", 5349)
+    # logger.info(f"Update port success: {update_success}")
+    # updated_config = get_server_config()
+    # logger.info(f"Updated config: {json.dumps(updated_config, indent=2)}")
+
+    # # Revert update
+    # revert_success = update_config_value("server.port", 5348)
+    # logger.info(f"Revert port success: {revert_success}")
+    # reverted_config = get_server_config()
+    # logger.info(f"Reverted config: {json.dumps(reverted_config, indent=2)}")
+
+    # Test non-existent key
+    # update_fail = update_config_value("server.non_existent.key", "test")
+    # logger.info(f"Update non-existent key success: {update_fail}")

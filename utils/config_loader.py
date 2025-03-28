@@ -122,21 +122,25 @@ class ConfigManager:
     
     def _validate_server_config(self, config: Dict[str, Any]) -> None:
         """Validate server configuration"""
+        if 'server' not in config:
+            raise ValueError("Missing 'server' section in server_config.json")
+        
+        server_config = config['server']
         required = {"host", "port"}
-        if not all(k in config for k in required):
-            raise ValueError(f"Missing required server config keys: {required}")
+        if not all(k in server_config for k in required):
+            raise ValueError(f"Missing required server config keys under 'server': {required - set(server_config.keys())}")
             
-        port = config.get("port")
+        port = server_config.get("port")
         if port is None:
-            config["port"] = 5348  # Default port if None
+            server_config["port"] = 5348  # Default port if None
             return
             
         if not isinstance(port, int):
             try:
-                config["port"] = int(port)
+                server_config["port"] = int(port)
             except (TypeError, ValueError):
                 logging.warning(f"Invalid port value: {port}, setting to default.")
-                config["port"] = 5348
+                server_config["port"] = 5348
     
     def get(self, section: str, key: str, default: Any = None) -> Any:
         """

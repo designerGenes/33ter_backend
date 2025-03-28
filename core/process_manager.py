@@ -19,7 +19,7 @@ from pathlib import Path
 try:
     from utils.path_config import get_logs_dir, get_screenshots_dir, get_temp_dir, get_project_root
     from utils.server_config import get_server_config as load_server_config_util, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
-    from utils.config_loader import config
+    from utils.config_loader import config as config_manager
     from core.screenshot_manager import ScreenshotManager
     from core.message_system import MessageManager, MessageLevel, MessageCategory
 except ImportError as e:
@@ -136,8 +136,6 @@ class ProcessManager:
         server_cfg = self.config.get('server', {})
         host = server_cfg.get('host', '0.0.0.0')
         port = server_cfg.get('port', 5348)
-        room = server_cfg.get('room', '33ter_room')
-        log_level = server_cfg.get('log_level', 'INFO')
 
         # Prepare environment
         env = os.environ.copy()
@@ -148,9 +146,7 @@ class ProcessManager:
             '-u',  # Unbuffered output
             server_script,
             '--host', host,
-            '--port', str(port),
-            '--room', room,
-            '--log-level', log_level
+            '--port', str(port)
         ]
 
         self.logger.info(f"Starting Socket.IO server: {' '.join(command)}")
@@ -187,23 +183,24 @@ class ProcessManager:
             return
 
         self.logger.info("Socket.IO monitor thread started.")
-        startup_message = "Running on http://"  # Message indicating server is ready
+        # More robust startup message detection
+        startup_patterns = ["Running on http://", "Starting Socket.IO server on"]
+        connection_attempted_this_cycle = False  # Prevent multiple attempts per detection
 
         while not self.socketio_stop_event.is_set():
             if self.socketio_process.poll() is not None:
                 self.logger.warning(f"Socket.IO server process terminated unexpectedly with code {self.socketio_process.poll()}.")
                 self._add_to_buffer("status", f"WARNING: Socket.IO server stopped unexpectedly (Code: {self.socketio_process.poll()}).", "warning")
                 self._add_to_buffer("debug", f"SERVER_EXIT: Process terminated with code {self.socketio_process.poll()}", "warning")
-                # Ensure internal client is marked as disconnected
                 if self.internal_sio_connected.is_set():
                     self.logger.info("Marking internal client as disconnected due to server process termination.")
                     self.internal_sio_connected.clear()
+                connection_attempted_this_cycle = False  # Reset flag
                 break
 
-            # Use select for non-blocking reads
             reads = [self.socketio_process.stdout, self.socketio_process.stderr]
             try:
-                ret = select.select(reads, [], [], 0.5)  # Timeout of 0.5 seconds
+                ret = select.select(reads, [], [], 0.5)
 
                 for fd in ret[0]:
                     line = fd.readline().strip()
@@ -211,39 +208,41 @@ class ProcessManager:
                         if fd is self.socketio_process.stdout:
                             self.logger.info(f"SocketIO Server STDOUT: {line}")
                             self._add_to_buffer("debug", f"SERVER_STDOUT: {line}", "info")
-                            # Check for startup message to connect internal client
-                            if startup_message in line and not self.internal_sio_connected.is_set():
+
+                            is_startup_msg = any(pattern in line for pattern in startup_patterns)
+
+                            # Check if server seems ready and we haven't tried connecting yet in this cycle
+                            # and the internal client isn't already connected or trying to connect
+                            if is_startup_msg and not connection_attempted_this_cycle and not self.internal_sio_connected.is_set() and \
+                               (not self.internal_sio_connect_thread or not self.internal_sio_connect_thread.is_alive()):
                                 self.logger.info("Socket.IO server startup message detected. Initiating internal client connection.")
                                 self._start_internal_client_connection()
+                                connection_attempted_this_cycle = True  # Mark that we tried connecting
+
                         elif fd is self.socketio_process.stderr:
                             self.logger.warning(f"SocketIO Server STDERR: {line}")
-                            self._add_to_buffer("debug", f"SERVER_STDERR: {line}", "error")  # Log stderr as error in debug
+                            self._add_to_buffer("debug", f"SERVER_STDERR: {line}", "error")
 
             except select.error as e:
-                # Handle select errors (e.g., bad file descriptor if process closes abruptly)
                 self.logger.error(f"Select error while monitoring Socket.IO process: {e}")
                 break
             except Exception as e:
                 self.logger.error(f"Unexpected error in Socket.IO monitor thread: {e}", exc_info=True)
-                # Log to debug buffer as well
-                # FIX: Ensure _add_to_buffer uses correct category even in exception handler
                 try:
                     self._add_to_buffer("debug", f"MONITOR_ERROR: {e}", "error")
                 except AttributeError as ae:
-                    # Handle potential AttributeError if MessageCategory.SOCKET is wrong during error logging itself
                     self.logger.error(f"Error logging monitor error to buffer: {ae}")
-                break  # Exit loop on unexpected error
+                break
 
         self.logger.info("Socket.IO monitor thread finished.")
-        # Final check for exit code after loop finishes
         exit_code = self.socketio_process.poll()
         if exit_code is not None:
             self.logger.info(f"Socket.IO process final exit code: {exit_code}")
             self._add_to_buffer("debug", f"SERVER_FINAL_EXIT: Code {exit_code}", "warning" if exit_code != 0 else "info")
-            # Ensure internal client is marked disconnected if server exited
             if self.internal_sio_connected.is_set():
                 self.logger.info("Marking internal client disconnected as server process exited.")
                 self.internal_sio_connected.clear()
+        connection_attempted_this_cycle = False  # Reset flag
 
     def stop_socketio_server(self):
         """Stop the Socket.IO server process."""
@@ -298,38 +297,47 @@ class ProcessManager:
             return
 
         self.logger.info("Setting up internal Socket.IO client...")
-        self.internal_sio_client = socketio.Client(logger=self.logger, engineio_logger=self.logger)
+        # Enable library logging for detailed insight
+        self.internal_sio_client = socketio.Client(logger=True, engineio_logger=True)
 
         @self.internal_sio_client.event
         def connect():
-            self.logger.info("Internal client connected to Socket.IO server.")
-            self.internal_sio_connected.set()  # Signal connection success
+            self.logger.info("***** INTERNAL CLIENT CONNECTED *****")
+            self.internal_sio_connected.set()
+            self._add_to_buffer("debug", "INTERNAL_CLIENT: Connected successfully", "info")
             try:
-                # Join the room specified in the config
                 room = self.config.get('server', {}).get('room', '33ter_room')
                 self.logger.info(f"Internal client joining room: {room}")
-                self.internal_sio_client.emit('join_room', {'room': room})
-                self._add_to_buffer("debug", f"INTERNAL_CLIENT: Joined room '{room}'", "info")
+                # Emit register_internal_client instead of just join_room
+                self.internal_sio_client.emit('register_internal_client', {})
+                self.logger.info("Internal client registration emitted.")
+                # Server side handles joining the room upon registration
+                self._add_to_buffer("debug", f"INTERNAL_CLIENT: Registration sent (joins room '{room}' on server)", "info")
             except Exception as e:
-                self.logger.error(f"Internal client failed to join room: {e}", exc_info=True)
-                self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: Failed join room: {e}", "error")
+                self.logger.error(f"Internal client failed during post-connection setup: {e}", exc_info=True)
+                self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: Failed post-connection setup: {e}", "error")
 
         @self.internal_sio_client.event
         def connect_error(data):
-            self.logger.error(f"Internal client connection failed: {data}")
-            self.internal_sio_connected.clear()  # Signal connection failure
+            self.logger.error(f"***** INTERNAL CLIENT CONNECTION ERROR ***** Data: {data}")
+            self.internal_sio_connected.clear()
             self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: Connection failed: {data}", "error")
 
         @self.internal_sio_client.event
         def disconnect():
-            self.logger.info("Internal client disconnected from Socket.IO server.")
-            self.internal_sio_connected.clear()  # Signal disconnection
-            self._add_to_buffer("debug", "INTERNAL_CLIENT: Disconnected", "warning")
+            was_connected = self.internal_sio_connected.is_set()
+            self.logger.warning(f"***** INTERNAL CLIENT DISCONNECTED ***** (Was previously connected: {was_connected})")
+            self.internal_sio_connected.clear()
+            if was_connected:
+                self._add_to_buffer("debug", "INTERNAL_CLIENT: Disconnected (previously connected)", "warning")
+            else:
+                self._add_to_buffer("debug", "INTERNAL_CLIENT: Disconnected (never fully connected?)", "error")
 
-        # Add handlers for messages if needed for debugging
         @self.internal_sio_client.on('*')
         def any_event(event, data):
-            self.logger.debug(f"Internal client received event '{event}': {data}")
+            # Reduce noise by ignoring lower-level engineio events if library logging is on
+            if event not in ['ping', 'pong']:
+                self.logger.debug(f"Internal client received event '{event}': {data}")
 
         self.logger.info("Internal client setup complete.")
 
@@ -339,31 +347,40 @@ class ProcessManager:
             self.logger.error("Internal client not set up, cannot connect.")
             return
 
-        # Get connection details from config *inside the thread*
         try:
-            server_cfg = load_server_config_util().get('server', {})  # Reload config
+            # Add a small delay before attempting connection
+            time.sleep(0.75)  # Increased delay slightly
+            server_cfg = load_server_config_util().get('server', {})
             host = server_cfg.get('host', '0.0.0.0')
-            if host == '0.0.0.0':
-                connect_host = '127.0.0.1'
-            else:
-                connect_host = host
+            connect_host = '127.0.0.1' if host == '0.0.0.0' else host
             port = server_cfg.get('port', 5348)
             server_url = f"http://{connect_host}:{port}"
             self.logger.info(f"Internal client attempting connection to {server_url}...")
             self._add_to_buffer("debug", f"INTERNAL_CLIENT: Connecting to {server_url}...", "info")
 
-            self.internal_sio_client.connect(server_url, wait_timeout=10)
+            self.logger.debug(f"Calling internal_sio_client.connect('{server_url}', wait_timeout=10)")
+            # Specify transports to potentially avoid issues if websocket upgrade fails silently
+            self.internal_sio_client.connect(server_url,
+                                             transports=['websocket', 'polling'],  # Explicitly allow both
+                                             wait_timeout=10
+                                             )
+            self.logger.debug("internal_sio_client.connect call finished without immediate exception.")
 
         except socketio.exceptions.ConnectionError as e:
-            self.logger.error(f"Internal client connection error: {e}")
+            self.logger.error(f"Internal client connection error during connect call: {e}")
             self.internal_sio_connected.clear()
-            self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: ConnectionError: {e}", "error")
+            self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: ConnectionError during connect(): {e}", "error")
         except Exception as e:
-            self.logger.error(f"Unexpected error during internal client connection: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error during internal client connection attempt: {e}", exc_info=True)
             self.internal_sio_connected.clear()
-            self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: Unexpected connection error: {e}", "error")
+            self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: Unexpected error during connect(): {e}", "error")
         finally:
-            self.logger.debug("Internal client connection thread finished.")
+            # Check status after attempting connection
+            # Note: client might disconnect *after* this thread finishes but before status is checked elsewhere
+            if self.internal_sio_client and self.internal_sio_client.connected:
+                self.logger.info("Internal client connection thread finished - Client IS connected at thread exit.")
+            else:
+                self.logger.warning("Internal client connection thread finished - Client IS NOT connected at thread exit.")
 
     def _start_internal_client_connection(self):
         """Sets up the internal client (if needed) and starts the connection thread."""
@@ -501,11 +518,20 @@ class ProcessManager:
         self.logger.info("Manual OCR trigger initiated.")
         self._add_to_buffer("debug", "Manual OCR trigger initiated.", "info")
 
+        # --- Add detailed check logging ---
+        client_exists = self.internal_sio_client is not None
+        event_set = self.internal_sio_connected.is_set()
+        client_connected_prop = self.internal_sio_client.connected if client_exists else False
+        self.logger.debug(f"OCR Trigger Check: Client Exists={client_exists}, Event Set={event_set}, Client Property Connected={client_connected_prop}")
+        # --- End detailed check logging ---
+
         try:
             ocr_text = self.screenshot_manager.process_latest_screenshot(manual_trigger=True)
             if ocr_text is None:
                 self.logger.warning("Manual OCR processing returned no text or failed.")
                 self._add_to_buffer("debug", "Manual OCR processing returned no text or failed.", "warning")
+                # Return False here as there's nothing to send
+                return False
             elif isinstance(ocr_text, str):
                 self.logger.info(f"Manual OCR processing successful: '{ocr_text[:50]}...'")
                 self._add_to_buffer("debug", f"Manual OCR successful: '{ocr_text[:50]}...'", "info")
@@ -520,31 +546,31 @@ class ProcessManager:
             self._add_to_buffer("status", f"ERROR processing screenshot: {e}", "error")
             return False
 
-        if isinstance(ocr_text, str):
-            if self.internal_sio_client and self.internal_sio_connected.is_set() and self.internal_sio_client.connected:
-                try:
-                    payload = [{
-                        'text': ocr_text,
-                        'timestamp': datetime.now().isoformat(),
-                        'from': 'localUI_manual'
-                    }]
-                    self.internal_sio_client.emit('ocr_result', payload)
-                    self.logger.info("Manual OCR result sent successfully via internal client.")
-                    self._add_to_buffer("debug", f"SENDING OCR RESULT (manual): '{ocr_text[:50]}...'", "info")
-                    return True
-                except Exception as e:
-                    self.logger.error(f"Failed to send manual OCR result via internal client: {e}", exc_info=True)
-                    self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: Failed to emit manual OCR result: {e}", "error")
-                    self._add_to_buffer("status", f"ERROR sending OCR result: {e}", "error")
-                    return False
-            else:
-                self.logger.warning("Cannot send manual OCR result: Internal client not connected.")
-                self._add_to_buffer("debug", "INTERNAL_CLIENT_WARN: Cannot send manual OCR - not connected.", "warning")
-                self._add_to_buffer("status", "WARNING: Cannot send OCR - Socket.IO not connected.", "warning")
-                if self.socketio_process and self.socketio_process.poll() is None:
-                    self.logger.info("Attempting to reconnect internal client as server process is running.")
-                    self._start_internal_client_connection()
+        # Check connection status *after* OCR processing is done
+        if client_exists and event_set and client_connected_prop:
+            try:
+                # The server now expects 'ocr_result' event, not a generic 'message' for this
+                payload = {  # Send dict directly, not list containing dict
+                    'text': ocr_text,
+                    'timestamp': datetime.now().isoformat(),
+                    'from': 'localUI_manual'
+                }
+                self.internal_sio_client.emit('ocr_result', payload)
+                self.logger.info("Manual OCR result sent successfully via internal client.")
+                self._add_to_buffer("debug", f"SENDING OCR RESULT (manual): '{ocr_text[:50]}...'", "info")
+                return True
+            except Exception as e:
+                self.logger.error(f"Failed to send manual OCR result via internal client: {e}", exc_info=True)
+                self._add_to_buffer("debug", f"INTERNAL_CLIENT_ERROR: Failed to emit manual OCR result: {e}", "error")
+                self._add_to_buffer("status", f"ERROR sending OCR result: {e}", "error")
                 return False
         else:
-            self.logger.warning("Skipping send: No valid OCR text obtained from manual trigger.")
+            # Log the state again when the check fails
+            self.logger.warning(f"Cannot send manual OCR result: Internal client not connected. State: Exists={client_exists}, Event Set={event_set}, Client Prop Connected={client_connected_prop}")
+            self._add_to_buffer("debug", "INTERNAL_CLIENT_WARN: Cannot send manual OCR - not connected.", "warning")
+            self._add_to_buffer("status", "WARNING: Cannot send OCR - Socket.IO not connected.", "warning")
+            if self.socketio_process and self.socketio_process.poll() is None:
+                self.logger.info("Attempting to reconnect internal client as server process is running.")
+                self._start_internal_client_connection()
             return False
+        # Removed redundant 'else' block as the case of ocr_text not being a string is handled earlier

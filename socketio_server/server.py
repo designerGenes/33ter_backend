@@ -32,255 +32,227 @@ from aiohttp import web
 import atexit
 import copy  # For deep copies
 import threading  # Import threading
+from typing import Dict, Optional, Any
 
-# --- Early Logging Setup ---
-# Basic config for messages before full setup
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-early_logger = logging.getLogger('33ter-SocketIO-Startup')
-early_logger.info("Server script started.")
-# --- End Early Logging Setup ---
+# Ensure the project root is in the Python path
+project_root = Path(__file__).resolve().parents[1]
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
-# Add app root to Python path if needed
-app_root = str(Path(__file__).parent.parent.absolute())
-if app_root not in sys.path:
-    early_logger.info(f"Adding {app_root} to PYTHONPATH")
-    sys.path.insert(0, app_root)
+# Import local modules after path adjustment
+from utils.config_loader import config as config_manager  # Use the ConfigManager instance
+from utils.message_utils import create_socket_message, MessageType
+from core.ocr_processor import OCRProcessor  # Added import
 
-try:
-    # Load config utility FIRST
-    from utils.server_config import get_server_config, update_server_config, save_server_config, DEFAULT_CONFIG
-    from utils.path_config import get_logs_dir
-    # Change relative import to absolute import
-    from socketio_server.discovery_manager import DiscoveryManager
-    from utils.network_utils import get_local_ip
-except ImportError as e:
-    early_logger.error(f"Failed to import dependencies: {e}", exc_info=True)
-    sys.exit(1)
-
-# --- Load Configuration EARLY ---
-# Load the configuration immediately after imports
-try:
-    config = get_server_config()
-    # Ensure critical keys exist using defaults if necessary after loading
-    if 'server' not in config or not isinstance(config.get('server'), dict):
-        early_logger.warning("Config missing 'server' section, restoring from defaults.")
-        config['server'] = copy.deepcopy(DEFAULT_CONFIG['server'])
-        save_server_config(config)  # Attempt to save corrected config
-    if 'host' not in config['server']:
-        early_logger.warning("Config missing 'host', restoring from default.")
-        config['server']['host'] = DEFAULT_CONFIG['server']['host']
-        save_server_config(config)
-    if 'port' not in config['server']:
-        early_logger.warning("Config missing 'port', restoring from default.")
-        config['server']['port'] = DEFAULT_CONFIG['server']['port']
-        save_server_config(config)
-    if 'cors_origins' not in config['server']:
-        early_logger.warning("Config missing 'cors_origins', restoring from default.")
-        config['server']['cors_origins'] = DEFAULT_CONFIG['server']['cors_origins']
-        save_server_config(config)
-
-except Exception as config_load_error:
-    early_logger.error(f"CRITICAL: Failed to load initial configuration: {config_load_error}", exc_info=True)
-    early_logger.warning("Falling back to hardcoded default configuration for server startup.")
-    config = copy.deepcopy(DEFAULT_CONFIG)  # Use defaults as a last resort
-
-# --- Full Logging Setup ---
-def setup_logging(log_level: str = "INFO"):
-    """Configure logging with the specified level."""
-    log_file = os.path.join(get_logs_dir(), "socketio_server.log")
-    # Use level from loaded config if available, otherwise use the function arg
-    effective_log_level_str = config.get('server', {}).get('log_level', log_level).upper()
-    log_level_enum = getattr(logging, effective_log_level_str, logging.INFO)
-
-    # Remove basicConfig handlers if they exist
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-
-    # Ensure log directory exists before creating FileHandler
-    try:
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    except OSError as e:
-        early_logger.error(f"Failed to create log directory {os.path.dirname(log_file)}: {e}")
-        pass
-
-    log_handlers = [logging.StreamHandler(sys.stdout)]
-    try:
-        log_handlers.append(logging.FileHandler(log_file))
-    except Exception as e:
-        early_logger.error(f"Failed to create FileHandler for {log_file}: {e}. File logging disabled.")
-
-    logging.basicConfig(
-        level=log_level_enum,  # Use the determined level
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=log_handlers,
-        force=True  # Try forcing reconfiguration
-    )
-    logging.getLogger('engineio.server').setLevel(logging.WARNING)
-    logging.getLogger('socketio.server').setLevel(logging.WARNING)
-    logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
-
-    logger_instance = logging.getLogger('33ter-SocketIO')
-    logger_instance.propagate = False
-    return logger_instance
-# --- End Full Logging Setup ---
-
-# --- Initialize Logger ---
-# Initialize after loading config and setting up logging function
-logger = setup_logging(config.get('server', {}).get('log_level', 'INFO'))
-
-# --- Socket.IO Server Setup ---
-# Use the 'config' loaded earlier
-cors_origins = config.get('server', {}).get('cors_origins', DEFAULT_CONFIG['server']['cors_origins'])
-logger.info(f"Initializing Socket.IO server with CORS origins: {cors_origins}")
-sio = socketio.AsyncServer(
-    async_mode='aiohttp',
-    cors_allowed_origins=cors_origins,  # Use the loaded origins
-    logger=False,  # Use our own logger
-    engineio_logger=False  # Use our own logger
-)
+# --- Globals ---
+config_data = config_manager.config  # Get the loaded config dictionary
+logger = logging.getLogger(__name__)  # Get logger instance, assumes setup elsewhere
+sio = socketio.AsyncServer(async_mode='aiohttp', cors_allowed_origins='*')
 app = web.Application()
 sio.attach(app)
 
-# Keep track of clients by type
-ios_clients = set()
-python_clients = set()
-current_room = config['server']['room']
+# Client tracking
+connected_clients: Dict[str, Dict[str, Any]] = {}
+current_room: Optional[str] = config_manager.get('server', 'room', default='33ter_room')
+internal_client_sid: Optional[str] = None
 
-# Global instance for discovery manager
-discovery_manager = None
+# OCR Processor instance
+ocr_processor = OCRProcessor()  # Added instance
 
-def get_client_count():
-    """Get current iOS client count."""
-    return len(ios_clients)
+# Health check related
+health_check_task: Optional[asyncio.Task] = None
+health_check_interval = config_manager.get('health_check', 'interval', default=60)
 
-# Event handlers
-@sio.event
-async def connect(sid, environ):
-    """Handle client connection."""
-    user_agent = environ.get('HTTP_USER_AGENT', '').lower()
-
-    if 'ios' in user_agent or 'iphone' in user_agent or 'ipad' in user_agent:
-        ios_clients.add(sid)
-        logger.info(f"iOS client connected: {sid}")
-    else:
-        ios_clients.add(sid)
-        python_clients.add(sid)
-        logger.info(f"Python client connected (treated as both): {sid}")
-
-    await broadcast_client_count()
-
-@sio.event
-async def disconnect(sid):
-    """Handle client disconnection."""
-    was_ios = sid in ios_clients
-    ios_clients.discard(sid)
-    python_clients.discard(sid)
-
-    if was_ios:
-        logger.info(f"iOS client disconnected: {sid}")
-        await broadcast_client_count()
-    else:
-        logger.info(f"Python client disconnected: {sid}")
+# --- Utility Functions ---
 
 async def broadcast_client_count():
     """Broadcast current iOS client count to all clients."""
-    count = get_client_count()
-    logger.debug(f"Broadcasting client count: {count}")
-    await sio.emit('client_count', {
-        'count': count,
-        'timestamp': datetime.now().isoformat()
-    })
+    ios_client_count = sum(1 for client in connected_clients.values() if client.get('client_type') == 'iOS')
+    logger.info(f"Broadcasting iOS client count: {ios_client_count}")
+    count_message = create_socket_message(
+        MessageType.CLIENT_COUNT,
+        {"count": ios_client_count},
+        sender="server"
+    )
+    await sio.emit('message', count_message, room=current_room)
+
+# --- Socket.IO Event Handlers ---
+
+@sio.event
+async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
+    """Handle new client connections."""
+    client_ip = environ.get('REMOTE_ADDR', 'Unknown IP')
+    client_type = auth.get('client', 'Unknown') if auth else 'Unknown'  # Check auth data for client type
+    
+    connected_clients[sid] = {
+        "address": client_ip,
+        "connect_time": datetime.now().isoformat(),
+        "client_type": client_type
+    }
+    logger.info(f"Client connected: {sid} ({client_ip}) - Type: {client_type}")
+    
+    # Send welcome message to the newly connected client
+    welcome_message = create_socket_message(
+        MessageType.INFO,
+        f"Welcome! You are connected with SID: {sid}",
+        sender="server"
+    )
+    await sio.emit('message', welcome_message, room=sid)
+
+    # Automatically join the default room
+    if current_room:
+        await sio.enter_room(sid, current_room)
+        logger.info(f"Client {sid} automatically joined room: {current_room}")
+        join_confirm_message = create_socket_message(
+            MessageType.INFO,
+            f"You have joined room: {current_room}",
+            sender="server"
+        )
+        await sio.emit('message', join_confirm_message, room=sid)
+        
+        # Broadcast updated client count after join confirmation
+        await broadcast_client_count()
+    else:
+        logger.warning(f"No default room configured for client {sid} to join.")
+
+
+@sio.event
+async def disconnect(sid: str):
+    """Handle client disconnections."""
+    if sid in connected_clients:
+        client_info = connected_clients.pop(sid)
+        logger.info(f"Client disconnected: {sid} ({client_info.get('address', 'Unknown IP')})")
+        
+        # If the internal client disconnects, clear its SID
+        global internal_client_sid
+        if sid == internal_client_sid:
+            logger.warning("Internal macOS client disconnected.")
+            internal_client_sid = None
+            
+        # Leave the known default room if it exists
+        if current_room:
+            try:
+                await sio.leave_room(sid, current_room)
+                logger.info(f"Client {sid} left room: {current_room}")
+            except Exception as e:
+                logger.error(f"Error removing {sid} from room {current_room}: {e}")
+
+        # Broadcast updated client count
+        await broadcast_client_count()
+    else:
+        logger.warning(f"Disconnect event received for unknown SID: {sid}")
 
 @sio.event
 async def join_room(sid, data):
     """Handle room join requests."""
-    global current_room
+    room_name = data.get('room')
+    if not room_name:
+        logger.error(f"Client {sid} sent join_room request without specifying room name.")
+        error_message = create_socket_message(MessageType.ERROR, "Room name is required.", sender="server")
+        await sio.emit('message', error_message, room=sid)
+        return
 
-    if not isinstance(data, dict) or 'room' not in data:
-        logger.error(f"Invalid join_room data from {sid}")
-        return False
-
-    room = data['room']
-    if not room:
-        logger.error(f"Empty room name from {sid}")
-        return False
-
-    current_room = room
-    await sio.enter_room(sid, room)
-    logger.info(f"Client {sid} joined room: {room}")
-
-    await sio.emit('message', {
-        'messageType': 'info',
-        'value': f'Connected to 33ter server in room: {room}',
-        'from': 'localBackend',
-    }, room=sid)
-
+    await sio.enter_room(sid, room_name)
+    logger.info(f"Client {sid} joined room: {room_name}")
+    
+    # Confirm joining the room
+    join_confirm_message = create_socket_message(
+        MessageType.INFO,
+        f"You have joined room: {room_name}",
+        sender="server"
+    )
+    await sio.emit('message', join_confirm_message, room=sid)
+    
+    # Broadcast updated client count for the specific room joined
     await broadcast_client_count()
-    return True
 
 @sio.event
 async def leave_room(sid, data):
     """Handle room leave requests."""
-    if not isinstance(data, dict) or 'room' not in data:
-        logger.error(f"Invalid leave_room data from {sid}: {data}")  # Log invalid data
+    room_name = data.get('room')
+    if not room_name:
+        logger.error(f"Client {sid} sent leave_room request without specifying room name.")
+        error_message = create_socket_message(MessageType.ERROR, "Room name is required.", sender="server")
+        await sio.emit('message', error_message, room=sid)
         return
 
-    room = data['room']
-    sio.leave_room(sid, room)
-    logger.info(f"Client {sid} left room: {room}")
+    if room_name in sio.rooms(sid):
+        await sio.leave_room(sid, room_name)
+        logger.info(f"Client {sid} left room: {room_name}")
+        # Confirm leaving the room
+        leave_confirm_message = create_socket_message(
+            MessageType.INFO,
+            f"You have left room: {room_name}",
+            sender="server"
+        )
+        await sio.emit('message', leave_confirm_message, room=sid)
+        # Broadcast updated client count
+        await broadcast_client_count()
+    else:
+        logger.warning(f"Client {sid} tried to leave room '{room_name}' but was not in it.")
+        error_message = create_socket_message(MessageType.WARNING, f"You are not in room: {room_name}", sender="server")
+        await sio.emit('message', error_message, room=sid)
 
 @sio.event
-async def ocr_result(sid, data):
-    """Handle OCR results from Python client and broadcast to room."""
-    if not current_room:
-        logger.warning(f"No room set for OCR result broadcast from {sid}")
-        return
-
-    logger.info(f"Received OCR result from {sid}, broadcasting as 'ocr_result' event to room {current_room}")
-
-    try:
-        if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-            logger.error(f"Invalid ocr_result data format received from {sid}: {data}")
-            return
-
-        ocr_data = data[0]
-        text = ocr_data.get('text', '')
-        timestamp = ocr_data.get('timestamp', datetime.now().isoformat())
-
-        payload = {
-            'text': text,
-            'timestamp': timestamp,
-            'from': 'localBackend'
-        }
-
-        await sio.emit('ocr_result', payload, room=current_room)
-        logger.info(f"Broadcast 'ocr_result' event successful to room {current_room}: {len(text)} chars")
-
-    except Exception as e:
-        logger.error(f"Error broadcasting OCR result event: {e}", exc_info=True)
-        await sio.emit('message', {
-            'messageType': 'warning',
-            'value': 'Failed to process OCR result',
-            'from': 'localBackend',
-        }, room=current_room)
+async def register_internal_client(sid: str, data: Optional[Dict] = None):
+    """Allows the macOS agent to identify itself as the internal client."""
+    global internal_client_sid
+    # FIX: Corrected variable name in the check
+    if internal_client_sid and internal_client_sid != sid:
+        logger.warning(f"Another internal client {sid} tried to register while {internal_client_sid} is active.")
+        internal_client_sid = sid  # Allow new client to take over for now
+        if sid in connected_clients:
+            connected_clients[sid]['client_type'] = 'Internal'  # Update type if known
+        logger.info(f"Internal macOS client re-registered with SID: {sid} (previous: {internal_client_sid})")
+    else:
+        internal_client_sid = sid
+        if sid in connected_clients:
+            connected_clients[sid]['client_type'] = 'Internal'
+        logger.info(f"Internal macOS client registered with SID: {sid}")
+        confirm_message = create_socket_message(MessageType.INFO, "Internal client registration confirmed.", sender="server")
+        await sio.emit('message', confirm_message, room=sid)
+        # Ensure the client is in the main room (should be from connect handler, but belt-and-suspenders)
+        if current_room:
+            await sio.enter_room(sid, current_room)
+            logger.debug(f"Ensured internal client {sid} is in room {current_room}")
 
 @sio.event
 async def trigger_ocr(sid):
     """Handle OCR trigger request from iOS client."""
+    logger.info(f"Received trigger_ocr from client {sid}")
+
     if not current_room:
-        logger.warning("No room set for OCR trigger")
+        logger.warning(f"No room set for OCR trigger from {sid}")
+        warning_msg = create_socket_message(MessageType.WARNING, "Server error: No processing room configured.", sender="server")
+        await sio.emit('message', warning_msg, room=sid)
         return
 
-    logger.info(f"Broadcasting OCR trigger to room {current_room}")
-    await sio.emit('trigger_ocr', {})
-    logger.debug(f"Sent trigger_ocr to all clients")
+    try:
+        loop = asyncio.get_running_loop()
+        if hasattr(ocr_processor, 'process_latest_screenshot'):
+            ocr_text = await loop.run_in_executor(None, ocr_processor.process_latest_screenshot)
+        else:
+            logger.error("OCRProcessor object or process_latest_screenshot method not found!")
+            ocr_text = None
+
+        if ocr_text and ocr_text.strip():
+            logger.info(f"OCR successful for {sid}. Emitting ocr_result.")
+            ocr_data = {"text": ocr_text, "source": "manual_trigger"}
+            await sio.emit('ocr_result', ocr_data, room=sid)
+        else:
+            logger.warning(f"OCR for {sid} returned no text.")
+            warning_msg = create_socket_message(MessageType.WARNING, "OCR processing returned no text.", sender="server")
+            await sio.emit('message', warning_msg, room=sid)
+
+    except Exception as e:
+        logger.error(f"Error processing OCR for {sid}: {e}", exc_info=True)
+        error_msg = create_socket_message(MessageType.ERROR, "Server error during OCR processing.", sender="server")
+        await sio.emit('message', error_msg, room=sid)
 
 @sio.event
 async def heartbeat(sid, data):
     """Handle heartbeat messages."""
-    logger.debug(f"Heartbeat received from {sid}")
     timestamp = data.get('timestamp')
-    logger.info(f"Heartbeat received: {timestamp}")
     await sio.emit('heartbeat_response', {
         'status': 'alive',
         'timestamp': timestamp
@@ -289,250 +261,76 @@ async def heartbeat(sid, data):
 @sio.event
 async def message(sid, data):
     """Handle custom messages."""
-    try:
-        if not isinstance(data, dict):
-            error = "Invalid message format: not a dict"
-            logger.error(f"{error} from {sid}")
-            return error
-
-        required_fields = ['messageType', 'from', 'value']
-        missing = [field for field in required_fields if field not in data]
-        if missing:
-            error = f"Missing required fields: {', '.join(missing)}"
-            logger.error(f"{error} from {sid}")
-            return error
-
-        logger.info(f"Message received: {data['messageType']} from {data['from']}")
-        logger.debug(f"Message content: {data}")
-
-        if current_room:
-            logger.debug(f"Broadcasting message to room {current_room}")
-            await sio.emit('message', data)
-            logger.info(f"Message broadcast successful to all clients")
-            return None
-
-        error = "No room set for message broadcast"
-        logger.warning(error)
-        return error
-
-    except Exception as e:
-        error = f"Error processing message: {str(e)}"
-        logger.error(error)
-        return error
+    logger.debug(f"Received generic message from {sid}: {data}")
+    pass
 
 # --- Health Check ---
 async def health_check():
     """Periodic health check and status broadcast."""
-    # Use loaded config
-    health_config = config.get('health_check', DEFAULT_CONFIG['health_check'])
-    if not health_config.get('enabled', False):
-        logger.info("Health check disabled in configuration.")
-        return
-
-    interval = health_config.get('interval', 30)
-    logger.info(f"Health check enabled with interval: {interval}s")
-
     while True:
-        if current_room:
-            try:
-                await broadcast_client_count()
-            except Exception as e:
-                logger.error(f"Health check broadcast failed: {e}")
-        await asyncio.sleep(interval)
+        await asyncio.sleep(health_check_interval)
+        logger.info("Performing periodic health check...")
+        logger.info(f"Connected clients ({len(connected_clients)}): {list(connected_clients.keys())}")
+        availability_message = create_socket_message(
+            MessageType.INFO, 
+            {"status": "available", "timestamp": datetime.now().isoformat()}, 
+            sender="server"
+        )
+        await sio.emit('server_available', availability_message, room=current_room)
 
 # --- Argument Parsing ---
 def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='33ter Socket.IO Server')
-    # Use defaults directly from the *already loaded* config dictionary
-    server_cfg = config.get('server', DEFAULT_CONFIG['server'])  # Safely get server config
-
-    parser.add_argument('--host',
-                        default=server_cfg.get('host', DEFAULT_CONFIG['server']['host']),
-                        help='Host to bind to')
-    parser.add_argument('--port',
-                        type=int,
-                        default=server_cfg.get('port', DEFAULT_CONFIG['server']['port']),
-                        help='Port to listen on')
-    parser.add_argument('--room',
-                        default=server_cfg.get('room', DEFAULT_CONFIG['server']['room']),
-                        help='Default room name')
-    parser.add_argument('--log-level',
-                        default=server_cfg.get('log_level', DEFAULT_CONFIG['server']['log_level']),
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],  # Add CRITICAL
-                        help='Logging level')
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="33ter Socket.IO Server")
+    parser.add_argument('--host', type=str, default=config_manager.get('server', 'host', default='0.0.0.0'),
+                        help='Host IP address to bind the server to.')
+    parser.add_argument('--port', type=int, default=config_manager.get('server', 'port', default=5348),
+                        help='Port number to bind the server to.')
     return parser.parse_args()
 
-# --- Application Initialization ---
-async def init_app():
-    """Initialize the application."""
-    global config  # Declare config as global at the function scope
-    global logger  # Declare logger as global if it might be reassigned
+# --- Server Lifecycle ---
 
-    args = parse_args()  # Parse args using loaded config defaults
+async def start_server(host: str, port: int):
+    """Starts the Socket.IO server and related tasks."""
+    global health_check_task
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port)
+    
+    logger.info(f"Starting Socket.IO server on {host}:{port}")
+    await site.start()
+    
+    health_check_task = asyncio.create_task(health_check())
+    logger.info(f"Health check started with interval: {health_check_interval}s")
+    
+    await asyncio.Event().wait()
 
-    # Update config based on command-line args ONLY if they differ from loaded config
-    server_updates = {}
-    # Safely access nested keys, providing empty dict as default
-    current_server_config = config.get('server', {})
-    if args.host != current_server_config.get('host'):
-        server_updates['host'] = args.host
-    if args.port != current_server_config.get('port'):
-        server_updates['port'] = args.port
-    if args.room != current_server_config.get('room'):
-        server_updates['room'] = args.room
-    if args.log_level != current_server_config.get('log_level'):
-        server_updates['log_level'] = args.log_level
+async def stop_server():
+    """Stops the Socket.IO server and cleans up."""
+    logger.info("Stopping Socket.IO server...")
+    if health_check_task and not health_check_task.done():
+        health_check_task.cancel()
+        try:
+            await health_check_task
+        except asyncio.CancelledError:
+            logger.info("Health check task cancelled.")
 
-    if server_updates:
-        logger.info(f"Updating server config with command-line arguments: {server_updates}")
-        # Use the update function which handles saving
-        # config is already declared global, so we just assign to it
-        config = update_server_config({'server': server_updates})
-        # Re-setup logging if level changed
-        if 'log_level' in server_updates:
-            logger.info(f"Log level changed to {args.log_level}, reconfiguring logger.")
-            # logger is already declared global, so we just assign to it
-            logger = setup_logging(args.log_level)
-            # Ensure the logger instance level is also updated
-            try:
-                logger.setLevel(getattr(logging, args.log_level.upper()))
-                logger.info(f"Logger level set to {args.log_level}")
-            except Exception as e:
-                 logger.error(f"Failed to set logger level after update: {e}")
+def cleanup_on_exit():
+    """Perform cleanup actions when the server exits."""
+    logger.info("Performing cleanup on exit...")
 
-
-    # Use the potentially updated config for health check check
-    # Safely access nested keys
-    health_cfg = config.get('health_check', DEFAULT_CONFIG['health_check'])
-    if health_cfg.get('enabled'):
-        logger.info("Creating health check task.")
-        asyncio.create_task(health_check())
-    else:
-        logger.info("Health check disabled.")
-
-    # Return the host/port that will actually be used
-    # Safely access nested keys
-    final_host = config.get('server', {}).get('host', DEFAULT_CONFIG['server']['host'])
-    final_port = config.get('server', {}).get('port', DEFAULT_CONFIG['server']['port'])
-    return final_host, final_port
+atexit.register(cleanup_on_exit)
 
 # --- Main Execution ---
-def main():
-    """Main entry point."""
-    loop = None  # Initialize loop variable
-    runner = None  # Initialize runner variable
-    site = None  # Initialize site variable
-    try:
-        # Get or create an event loop for the main thread
-        try:
-            # Try getting the loop associated with the current OS thread
-            loop = asyncio.get_event_loop_policy().get_event_loop()
-            if loop.is_running():
-                logger.warning("Event loop is already running in main thread. Attempting to use it.")
-            else:
-                logger.info("Using existing event loop for main thread.")
-        except RuntimeError:
-            logger.info("Creating new event loop for main thread.")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        # Run init_app within the managed loop
-        host, port = loop.run_until_complete(init_app())
-        logger.info(f"Configuration loaded. Preparing to run server on {host}:{port}")
-
-        # Bonjour/Zeroconf setup
-        # Initialize DiscoveryManager here if needed, or ensure it's handled elsewhere
-        global discovery_manager
-        try:
-            discovery_manager = DiscoveryManager()
-            logger.info("DiscoveryManager initialized.")
-        except Exception as disc_err:
-            logger.error(f"Failed to initialize DiscoveryManager: {disc_err}", exc_info=True)
-            discovery_manager = None  # Ensure it's None if init fails
-
-        local_ip = get_local_ip()
-        if discovery_manager and local_ip:
-            service_name = f"33ter Backend ({local_ip}:{port})"
-            logger.info(f"Starting Bonjour discovery service: {service_name}")
-            # Assuming start_discovery is synchronous or handled internally
-            discovery_manager.start_discovery(port=port, service_name=service_name)
-        elif not local_ip:
-            logger.warning("Could not determine local IP for Bonjour registration or logging.")
-
-        # Setup and run the web server
-        logger.info("Setting up AIOHTTP AppRunner...")
-        runner = web.AppRunner(app)
-        loop.run_until_complete(runner.setup())
-        logger.info("AppRunner setup complete.")
-        site = web.TCPSite(runner, host, port)
-        loop.run_until_complete(site.start())
-        logger.info(f"TCPSite started on http://{host}:{port}")
-
-        startup_msg = f"Running on http://{host}:{port}"
-        logger.info(f"SERVER IS LIVE: {startup_msg}")
-        print(startup_msg, flush=True)  # Print startup message for ProcessManager
-
-        logger.info("Entering main event loop (run_forever).")
-        loop.run_forever()  # This blocks until loop.stop() is called
-
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received, shutting down.")
-    except Exception as e:
-        logger.critical(f"Unhandled exception in main execution: {e}", exc_info=True)
-    finally:
-        logger.info("Starting server shutdown sequence.")
-
-        # --- Graceful Shutdown ---
-        # Use the loop variable captured in the try block
-        if loop and loop.is_running():
-            logger.info("Event loop is running, attempting graceful shutdown.")
-            # Schedule cleanup tasks to run on the loop
-            async def shutdown_tasks():
-                nonlocal site, runner  # Allow modification of outer scope variables if needed
-                if site:
-                    logger.info("Stopping TCPSite...")
-                    await site.stop()
-                    logger.info("TCPSite stopped.")
-                if runner:
-                    logger.info("Cleaning up AppRunner...")
-                    await runner.cleanup()
-                    logger.info("AppRunner cleaned up.")
-                # Cancel other pending tasks (excluding self)
-                tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task(loop)]
-                if tasks:
-                    logger.info(f"Cancelling {len(tasks)} outstanding tasks.")
-                    [task.cancel() for task in tasks]
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                    logger.info("Outstanding tasks cancelled.")
-
-            # Run the shutdown tasks and then stop the loop
-            loop.run_until_complete(shutdown_tasks())
-            loop.stop()
-            logger.info("Event loop stopped.")
-
-        elif loop and not loop.is_running():
-            logger.info("Event loop was found but is not running. Minimal cleanup.")
-            # Perform non-async cleanup if needed
-            if discovery_manager:
-                logger.info("Stopping Bonjour discovery (non-async).")
-                discovery_manager.stop_discovery()
-        else:
-            logger.info("No running event loop found. Minimal cleanup.")
-            # Perform non-async cleanup if needed
-            if discovery_manager:
-                logger.info("Stopping Bonjour discovery (non-async).")
-                discovery_manager.stop_discovery()
-
-        logger.info("Server shutdown sequence complete.")
-
-    return 0
 
 if __name__ == '__main__':
-    # Ensure logs directory exists before anything else
+    args = parse_args()
+    
     try:
-        os.makedirs(get_logs_dir(), exist_ok=True)
+        asyncio.run(start_server(args.host, args.port))
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user (KeyboardInterrupt).")
     except Exception as e:
-        print(f"CRITICAL: Failed to create logs directory {get_logs_dir()}: {e}", file=sys.stderr)
-
-    sys.exit(main())
+        logger.critical(f"Server encountered critical error: {e}", exc_info=True)
+    finally:
+        logger.info("Server shutdown complete.")

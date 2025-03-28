@@ -124,10 +124,10 @@ class StatusView(BaseView):
             self.process_manager.stop_socketio_server()
         elif key == ord('3'):
             self.process_manager.start_screenshot_manager()
-        elif key == ord('4'):
-            self.process_manager.stop_screenshot_manager()
-        elif key == ord('0'):
-            self.process_manager.stop_all()
+        # elif key == ord('4'):
+        #     self.process_manager.stop_screenshot_manager()
+        # elif key == ord('0'):
+        #     self.process_manager.stop_all()
         else:
             return False # Indicate key was not handled here
 

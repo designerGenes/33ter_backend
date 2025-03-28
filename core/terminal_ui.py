@@ -85,9 +85,15 @@ class TerminalUI:
         except Exception as e:
             logging.error(f"Error during view initialization: {e}", exc_info=True)
             if "status" not in self.views:
-                self.views["status"] = BaseView(self.stdscr, self.process_manager)
-                self.views["status"].view_name = "status"
-                self.current_view = "status"
+                # Attempt to create a fallback BaseView if StatusView failed
+                try:
+                    self.views["status"] = BaseView(self.stdscr, self.process_manager)
+                    self.views["status"].view_name = "status" # Manually set name
+                    self.current_view = "status"
+                    logging.warning("Fell back to basic StatusView due to initialization error.")
+                except Exception as fallback_e:
+                     logging.critical(f"CRITICAL: Failed even to initialize fallback BaseView: {fallback_e}")
+                     raise RuntimeError("Failed to initialize any UI views.") from fallback_e
 
     def run(self, stdscr):
         """Main UI loop"""
@@ -119,36 +125,54 @@ class TerminalUI:
                     last_refresh_time = 0  # Force immediate redraw
 
                 if key != -1:
+                    # --- Add temporary logging ---
+                    try:
+                        key_char = chr(key) if 32 <= key <= 126 else 'N/A'
+                    except ValueError:
+                        key_char = 'Invalid'
+                    self.process_manager.logger.debug(f"TerminalUI.run received key: {key} (char: {key_char})")
+                    # --- End temporary logging ---
+
+                    # First, try global handling (quit, view switch)
                     if not self.handle_input(key):
+                        # If not handled globally, pass to current view
                         if self.current_view and self.current_view in self.views:
                             if not self.views[self.current_view].handle_input(key):
+                                # If view didn't handle it, check for quit again (redundant but safe)
                                 if key == ord('q'):
                                     break  # Exit main loop
-                        elif key == ord('q'):
+                        elif key == ord('q'): # Handle quit even if current_view is somehow invalid
                             break
 
+                    # Input was handled (or ignored), force refresh potentially sooner
                     last_refresh_time = 0
 
+                # Refresh screen periodically or after input
                 if current_time - last_refresh_time >= refresh_interval:
                     if self.current_view and self.current_view in self.views:
                         self.views[self.current_view].draw()
                     else:
+                        # Handle case where current_view is invalid
                         try:
                             stdscr.erase()
                             stdscr.addstr(0, 0, "ERROR: Current view unavailable. Press 'q' to quit.")
                             stdscr.refresh()
-                        except:
-                            pass
+                        except curses.error:
+                            pass # Ignore if even this fails
                     last_refresh_time = current_time
 
-                time.sleep(0.01)
+                time.sleep(0.01) # Small sleep to prevent high CPU usage
 
         except curses.error as e:
             logging.error(f"Curses error in main loop: {e}", exc_info=True)
-            curses.curs_set(1)
-            stdscr.keypad(False)
-            stdscr.nodelay(False)
-            curses.endwin()
+            # Attempt to clean up curses state gracefully
+            try:
+                curses.curs_set(1)
+                stdscr.keypad(False)
+                stdscr.nodelay(False)
+                curses.endwin()
+            except:
+                pass # Ignore errors during cleanup
             print(f"\nCurses error occurred: {e}", file=sys.stderr)
             return False
         except Exception as e:
@@ -167,6 +191,14 @@ class TerminalUI:
 
     def handle_input(self, key):
         """Handle global input."""
+        # --- Add temporary logging ---
+        try:
+            key_char = chr(key) if 32 <= key <= 126 else 'N/A'
+        except ValueError:
+            key_char = 'Invalid'
+        self.process_manager.logger.debug(f"TerminalUI.handle_input processing key: {key} (char: {key_char})")
+        # --- End temporary logging ---
+
         if key == ord('q'):
             return False
         elif key in (ord('1'), ord('2'), ord('3')):
