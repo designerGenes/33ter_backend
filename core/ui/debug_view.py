@@ -21,14 +21,18 @@ class DebugView(BaseView):
 
     def draw_content(self):
         """Draw the debug view content."""
-        max_y, max_x = self.height, self.width
-        self.win.addstr(1, 2, "Socket.IO Debug Log", curses.A_BOLD | curses.A_UNDERLINE)
+        # Use self.win.getmaxyx() for content window dimensions
+        max_y, max_x = self.win.getmaxyx()
+        try:
+            self.win.addstr(1, 2, "Socket.IO Debug Log", curses.A_BOLD | curses.A_UNDERLINE)
+        except curses.error:
+            pass  # Ignore if too small
 
         # Use MessageManager output directly
         log_lines = self.process_manager.get_output("debug")
 
         # Calculate visible lines (adjust for header/footer/borders)
-        visible_lines = max_y - 4  # Height of the content window
+        visible_lines = max(0, max_y - 4)  # Leave space for title, border, scrollbar
 
         # Adjust scroll position if necessary (ensure scroll_pos is valid)
         max_scroll = max(0, len(log_lines) - visible_lines)
@@ -40,8 +44,9 @@ class DebugView(BaseView):
         # Display log lines
         for i, line_str in enumerate(display_lines):
             y_pos = 3 + i  # Start drawing below header
-            if y_pos >= max_y - 1:
-                break  # Prevent drawing outside window
+            # Check against content window height (max_y)
+            if y_pos >= max_y - 1:  # Stop before the last line (used for border)
+                break
 
             # Basic coloring based on keywords in the formatted string
             color = curses.A_NORMAL
@@ -55,22 +60,33 @@ class DebugView(BaseView):
 
             try:
                 # Ensure line fits width, truncate if necessary
-                truncated_line = line_str[:max_x - 3]  # Leave space for border
+                # Check against content window width (max_x)
+                truncated_line = line_str[:max_x - 3]  # Leave space for border (x=0, x=max_x-1) and margin (x=1)
                 self.win.addstr(y_pos, 2, truncated_line, color)
             except curses.error as e:
                 # Log curses errors if they happen unexpectedly
-                logger.debug(f"Curses error in DebugView draw_content: {e} at y={y_pos}")
-                pass  # Ignore errors trying to write outside window bounds
+                logger.debug(f"Curses error in DebugView draw_content loop: {e} at y={y_pos}, max_y={max_y}, max_x={max_x}")
+                # Don't re-raise, just stop drawing this line
+                pass
 
-        # Add scroll indicator if needed
-        if len(log_lines) > visible_lines:
-            # Ensure division by zero doesn't happen
-            scroll_base = len(log_lines) - visible_lines
-            scroll_perc = int((self.scroll_pos / scroll_base) * 100) if scroll_base > 0 else 0
-            self.win.addstr(max_y - 2, max_x - 10, f"Scroll:{scroll_perc:3d}%", curses.A_REVERSE)
-        else:
-            # Clear scroll indicator area if not needed
-            self.win.addstr(max_y - 2, max_x - 10, " " * 9, curses.A_NORMAL)
+        # Add scroll indicator if needed and if space allows
+        # Check against content window dimensions (max_y, max_x)
+        if len(log_lines) > visible_lines and max_y > 2 and max_x >= 10:
+            try:
+                # Ensure division by zero doesn't happen
+                scroll_base = len(log_lines) - visible_lines
+                scroll_perc = int((self.scroll_pos / scroll_base) * 100) if scroll_base > 0 else 0
+                # Draw on second-to-last line of the content window
+                self.win.addstr(max_y - 2, max_x - 10, f"Scroll:{scroll_perc:3d}%", curses.A_REVERSE)
+            except curses.error as e:
+                logger.debug(f"Curses error drawing scroll indicator: {e}, max_y={max_y}, max_x={max_x}")
+                pass  # Ignore error if drawing fails
+        elif max_y > 2 and max_x >= 10:
+            try:
+                # Clear scroll indicator area if not needed
+                self.win.addstr(max_y - 2, max_x - 10, " " * 9, curses.A_NORMAL)
+            except curses.error:
+                pass  # Ignore error if clearing fails
 
     def handle_input(self, key):
         """Handle debug view specific input"""

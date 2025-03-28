@@ -9,6 +9,9 @@ from .base_view import BaseView
 from .color_scheme import *
 from utils import get_temp_dir, get_frequency_config_file, get_screenshots_dir
 
+# Get logger for this module
+logger = logging.getLogger(__name__)
+
 class ScreenshotView(BaseView):
     def __init__(self, stdscr, process_manager):
         super().__init__(stdscr, process_manager)
@@ -73,15 +76,39 @@ class ScreenshotView(BaseView):
         return True
 
     def toggle_screenshot_pause(self):
-        """Toggle the screenshot capture pause state."""
+        """Toggle the screenshot capture pause state using signal files."""
+        pause_signal_file = os.path.join(get_temp_dir(), "signal_pause_capture")
+
         if self.process_manager.screenshot_manager.is_running():
-            self.process_manager.screenshot_manager.pause_capturing()
-            self.is_paused = True
-            self.process_manager._add_to_buffer("screenshot", "Screenshot capture paused", "info")
+            # Currently running, so request pause
+            try:
+                # Create an empty file (like 'touch' command)
+                with open(pause_signal_file, 'a'):
+                    os.utime(pause_signal_file, None)
+                self.is_paused = True  # Update UI state optimistically
+                self.process_manager._add_to_buffer("screenshot", "Screenshot capture pause requested.", "info")
+                logger.info("Pause signal file created.")
+            except Exception as sig_e:
+                logger.error(f"Error creating pause signal file: {sig_e}", exc_info=True)
+                self.process_manager._add_to_buffer("status", f"Error signaling pause: {sig_e}", "error")
         else:
-            self.process_manager.screenshot_manager.resume_capturing()
-            self.is_paused = False
-            self.process_manager._add_to_buffer("screenshot", "Screenshot capture resumed", "info")
+            # Currently paused or stopped, so request resume
+            try:
+                if os.path.exists(pause_signal_file):
+                    os.remove(pause_signal_file)
+                    logger.info("Pause signal file removed.")
+                else:
+                    logger.info("Pause signal file already removed or never existed.")
+                self.is_paused = False  # Update UI state optimistically
+                self.process_manager._add_to_buffer("screenshot", "Screenshot capture resume requested.", "info")
+            except FileNotFoundError:
+                # If file doesn't exist, it's already resumed or never paused
+                self.is_paused = False
+                logger.info("Pause signal file not found during resume request.")
+                self.process_manager._add_to_buffer("screenshot", "Screenshot capture already resumed.", "info")
+            except Exception as sig_e:
+                logger.error(f"Error removing pause signal file: {sig_e}", exc_info=True)
+                self.process_manager._add_to_buffer("status", f"Error signaling resume: {sig_e}", "error")
 
     def open_screenshots_folder(self):
         """Open the folder containing screenshots."""
@@ -127,19 +154,30 @@ class ScreenshotView(BaseView):
             self.current_frequency = 4.0
 
     def save_screenshot_frequency(self):
-        """Save the current screenshot frequency to config."""
+        """Save the current screenshot frequency to config and signal reload."""
         try:
             config_file = get_frequency_config_file()
             os.makedirs(os.path.dirname(config_file), exist_ok=True)
             with open(config_file, "w") as f:
                 json.dump({'frequency': self.current_frequency}, f)
+            logger.info(f"Screenshot frequency config saved: {self.current_frequency:.1f}s")
 
-            self.process_manager.screenshot_manager.set_frequency(self.current_frequency)
-            self.process_manager._add_to_buffer("screenshot", f"Frequency set to {self.current_frequency:.1f}s", "info")
+            # Signal the ScreenshotManager to reload the frequency
+            try:
+                signal_file = os.path.join(get_temp_dir(), "reload_frequency")
+                # Create an empty file (like 'touch' command)
+                with open(signal_file, 'a'):
+                    os.utime(signal_file, None)
+                # Update message to reflect request, not immediate change
+                self.process_manager._add_to_buffer("screenshot", f"Frequency change to {self.current_frequency:.1f}s requested.", "info")
+                logger.info("Frequency reload signal file created.")
+            except Exception as sig_e:
+                logger.error(f"Error creating frequency reload signal file: {sig_e}", exc_info=True)
+                self.process_manager._add_to_buffer("status", f"Error signaling frequency reload: {sig_e}", "error")
 
         except Exception as e:
-            logging.error(f"Error saving frequency: {e}", exc_info=True)
-            self.process_manager._add_to_buffer("status", f"Error saving frequency: {e}", "error")
+            logger.error(f"Error saving frequency config: {e}", exc_info=True)
+            self.process_manager._add_to_buffer("status", f"Error saving frequency config: {e}", "error")
 
     def get_frequency_input(self):
         """Get screenshot frequency input from user."""
