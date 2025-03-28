@@ -1,6 +1,6 @@
 """Utility functions and helpers for the 33ter Python application"""
 from .path_config import (
-    get_app_root,
+    get_project_root, # Changed from get_project_root
     get_config_dir,
     get_screenshots_dir,
     get_logs_dir,
@@ -11,7 +11,7 @@ from .path_config import (
 from .server_config import get_server_config, update_server_config
 
 __all__ = [
-    'get_app_root',
+    'get_project_root', # Changed from get_project_root
     'get_config_dir',
     'get_screenshots_dir',
     'get_logs_dir',

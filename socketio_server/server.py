@@ -30,6 +30,8 @@ import asyncio
 import socketio
 from aiohttp import web
 import atexit
+import copy  # For deep copies
+import threading  # Import threading
 
 # --- Early Logging Setup ---
 # Basic config for messages before full setup
@@ -45,7 +47,8 @@ if app_root not in sys.path:
     sys.path.insert(0, app_root)
 
 try:
-    from utils.server_config import get_server_config, update_server_config
+    # Load config utility FIRST
+    from utils.server_config import get_server_config, update_server_config, save_server_config, DEFAULT_CONFIG
     from utils.path_config import get_logs_dir
     # Change relative import to absolute import
     from socketio_server.discovery_manager import DiscoveryManager
@@ -54,11 +57,40 @@ except ImportError as e:
     early_logger.error(f"Failed to import dependencies: {e}", exc_info=True)
     sys.exit(1)
 
+# --- Load Configuration EARLY ---
+# Load the configuration immediately after imports
+try:
+    config = get_server_config()
+    # Ensure critical keys exist using defaults if necessary after loading
+    if 'server' not in config or not isinstance(config.get('server'), dict):
+        early_logger.warning("Config missing 'server' section, restoring from defaults.")
+        config['server'] = copy.deepcopy(DEFAULT_CONFIG['server'])
+        save_server_config(config)  # Attempt to save corrected config
+    if 'host' not in config['server']:
+        early_logger.warning("Config missing 'host', restoring from default.")
+        config['server']['host'] = DEFAULT_CONFIG['server']['host']
+        save_server_config(config)
+    if 'port' not in config['server']:
+        early_logger.warning("Config missing 'port', restoring from default.")
+        config['server']['port'] = DEFAULT_CONFIG['server']['port']
+        save_server_config(config)
+    if 'cors_origins' not in config['server']:
+        early_logger.warning("Config missing 'cors_origins', restoring from default.")
+        config['server']['cors_origins'] = DEFAULT_CONFIG['server']['cors_origins']
+        save_server_config(config)
+
+except Exception as config_load_error:
+    early_logger.error(f"CRITICAL: Failed to load initial configuration: {config_load_error}", exc_info=True)
+    early_logger.warning("Falling back to hardcoded default configuration for server startup.")
+    config = copy.deepcopy(DEFAULT_CONFIG)  # Use defaults as a last resort
+
 # --- Full Logging Setup ---
 def setup_logging(log_level: str = "INFO"):
     """Configure logging with the specified level."""
     log_file = os.path.join(get_logs_dir(), "socketio_server.log")
-    log_level_enum = getattr(logging, log_level.upper(), logging.INFO)
+    # Use level from loaded config if available, otherwise use the function arg
+    effective_log_level_str = config.get('server', {}).get('log_level', log_level).upper()
+    log_level_enum = getattr(logging, effective_log_level_str, logging.INFO)
 
     # Remove basicConfig handlers if they exist
     for handler in logging.root.handlers[:]:
@@ -78,9 +110,10 @@ def setup_logging(log_level: str = "INFO"):
         early_logger.error(f"Failed to create FileHandler for {log_file}: {e}. File logging disabled.")
 
     logging.basicConfig(
-        level=log_level_enum,
+        level=log_level_enum,  # Use the determined level
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=log_handlers
+        handlers=log_handlers,
+        force=True  # Try forcing reconfiguration
     )
     logging.getLogger('engineio.server').setLevel(logging.WARNING)
     logging.getLogger('socketio.server').setLevel(logging.WARNING)
@@ -91,18 +124,20 @@ def setup_logging(log_level: str = "INFO"):
     return logger_instance
 # --- End Full Logging Setup ---
 
-# Load configuration
-config = get_server_config()
+# --- Initialize Logger ---
+# Initialize after loading config and setting up logging function
+logger = setup_logging(config.get('server', {}).get('log_level', 'INFO'))
 
-# Create Socket.IO server with reduced logging for socketio/engineio
+# --- Socket.IO Server Setup ---
+# Use the 'config' loaded earlier
+cors_origins = config.get('server', {}).get('cors_origins', DEFAULT_CONFIG['server']['cors_origins'])
+logger.info(f"Initializing Socket.IO server with CORS origins: {cors_origins}")
 sio = socketio.AsyncServer(
     async_mode='aiohttp',
-    cors_allowed_origins=config['server']['cors_origins'],
-    logger=False,
-    engineio_logger=False
+    cors_allowed_origins=cors_origins,  # Use the loaded origins
+    logger=False,  # Use our own logger
+    engineio_logger=False  # Use our own logger
 )
-
-# Create web application
 app = web.Application()
 sio.attach(app)
 
@@ -113,7 +148,6 @@ current_room = config['server']['room']
 
 # Global instance for discovery manager
 discovery_manager = None
-logger = None
 
 def get_client_count():
     """Get current iOS client count."""
@@ -172,7 +206,7 @@ async def join_room(sid, data):
         return False
 
     current_room = room
-    sio.enter_room(sid, room)
+    await sio.enter_room(sid, room)
     logger.info(f"Client {sid} joined room: {room}")
 
     await sio.emit('message', {
@@ -188,6 +222,7 @@ async def join_room(sid, data):
 async def leave_room(sid, data):
     """Handle room leave requests."""
     if not isinstance(data, dict) or 'room' not in data:
+        logger.error(f"Invalid leave_room data from {sid}: {data}")  # Log invalid data
         return
 
     room = data['room']
@@ -285,12 +320,17 @@ async def message(sid, data):
         logger.error(error)
         return error
 
+# --- Health Check ---
 async def health_check():
     """Periodic health check and status broadcast."""
-    if not config['health_check']['enabled']:
+    # Use loaded config
+    health_config = config.get('health_check', DEFAULT_CONFIG['health_check'])
+    if not health_config.get('enabled', False):
+        logger.info("Health check disabled in configuration.")
         return
 
-    interval = config['health_check']['interval']
+    interval = health_config.get('interval', 30)
+    logger.info(f"Health check enabled with interval: {interval}s")
 
     while True:
         if current_room:
@@ -300,141 +340,199 @@ async def health_check():
                 logger.error(f"Health check broadcast failed: {e}")
         await asyncio.sleep(interval)
 
+# --- Argument Parsing ---
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='33ter Socket.IO Server')
+    # Use defaults directly from the *already loaded* config dictionary
+    server_cfg = config.get('server', DEFAULT_CONFIG['server'])  # Safely get server config
+
     parser.add_argument('--host',
-                       default=config['server']['host'],
-                       help='Host to bind to')
+                        default=server_cfg.get('host', DEFAULT_CONFIG['server']['host']),
+                        help='Host to bind to')
     parser.add_argument('--port',
-                       type=int,
-                       default=config['server']['port'],
-                       help='Port to listen on')
+                        type=int,
+                        default=server_cfg.get('port', DEFAULT_CONFIG['server']['port']),
+                        help='Port to listen on')
     parser.add_argument('--room',
-                       default=config['server']['room'],
-                       help='Default room name')
+                        default=server_cfg.get('room', DEFAULT_CONFIG['server']['room']),
+                        help='Default room name')
     parser.add_argument('--log-level',
-                       default=config['server']['log_level'],
-                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                       help='Logging level')
+                        default=server_cfg.get('log_level', DEFAULT_CONFIG['server']['log_level']),
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],  # Add CRITICAL
+                        help='Logging level')
     return parser.parse_args()
 
+# --- Application Initialization ---
 async def init_app():
     """Initialize the application."""
-    args = parse_args()
+    global config  # Declare config as global at the function scope
+    global logger  # Declare logger as global if it might be reassigned
 
-    server_updates = {
-        'server': {
-            'host': args.host,
-            'port': args.port,
-            'room': args.room,
-            'log_level': args.log_level
-        }
-    }
-    update_server_config(server_updates)
+    args = parse_args()  # Parse args using loaded config defaults
 
-    if config['health_check']['enabled']:
+    # Update config based on command-line args ONLY if they differ from loaded config
+    server_updates = {}
+    # Safely access nested keys, providing empty dict as default
+    current_server_config = config.get('server', {})
+    if args.host != current_server_config.get('host'):
+        server_updates['host'] = args.host
+    if args.port != current_server_config.get('port'):
+        server_updates['port'] = args.port
+    if args.room != current_server_config.get('room'):
+        server_updates['room'] = args.room
+    if args.log_level != current_server_config.get('log_level'):
+        server_updates['log_level'] = args.log_level
+
+    if server_updates:
+        logger.info(f"Updating server config with command-line arguments: {server_updates}")
+        # Use the update function which handles saving
+        # config is already declared global, so we just assign to it
+        config = update_server_config({'server': server_updates})
+        # Re-setup logging if level changed
+        if 'log_level' in server_updates:
+            logger.info(f"Log level changed to {args.log_level}, reconfiguring logger.")
+            # logger is already declared global, so we just assign to it
+            logger = setup_logging(args.log_level)
+            # Ensure the logger instance level is also updated
+            try:
+                logger.setLevel(getattr(logging, args.log_level.upper()))
+                logger.info(f"Logger level set to {args.log_level}")
+            except Exception as e:
+                 logger.error(f"Failed to set logger level after update: {e}")
+
+
+    # Use the potentially updated config for health check check
+    # Safely access nested keys
+    health_cfg = config.get('health_check', DEFAULT_CONFIG['health_check'])
+    if health_cfg.get('enabled'):
+        logger.info("Creating health check task.")
         asyncio.create_task(health_check())
+    else:
+        logger.info("Health check disabled.")
 
-    return args.host, args.port
+    # Return the host/port that will actually be used
+    # Safely access nested keys
+    final_host = config.get('server', {}).get('host', DEFAULT_CONFIG['server']['host'])
+    final_port = config.get('server', {}).get('port', DEFAULT_CONFIG['server']['port'])
+    return final_host, final_port
 
+# --- Main Execution ---
 def main():
     """Main entry point."""
-    global discovery_manager, logger
-    runner = None
-    loop = None
+    loop = None  # Initialize loop variable
+    runner = None  # Initialize runner variable
+    site = None  # Initialize site variable
     try:
-        args = parse_args()
-        server_updates = {
-            'server': {
-                'host': args.host, 'port': args.port, 'room': args.room, 'log_level': args.log_level
-            }
-        }
-        update_server_config(server_updates)
+        # Get or create an event loop for the main thread
+        try:
+            # Try getting the loop associated with the current OS thread
+            loop = asyncio.get_event_loop_policy().get_event_loop()
+            if loop.is_running():
+                logger.warning("Event loop is already running in main thread. Attempting to use it.")
+            else:
+                logger.info("Using existing event loop for main thread.")
+        except RuntimeError:
+            logger.info("Creating new event loop for main thread.")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
-        logger = setup_logging(args.log_level)
-        logger.info(f"Log level set to {args.log_level}")
-        logger.info(f"Parsed args: {args}")
+        # Run init_app within the managed loop
+        host, port = loop.run_until_complete(init_app())
+        logger.info(f"Configuration loaded. Preparing to run server on {host}:{port}")
 
-        logger.info(f"Starting Socket.IO server on {args.host}:{args.port}")
-        logger.info("Socket.IO AsyncServer created.")
-        logger.info("AIOHTTP application created and Socket.IO attached.")
-        logger.info(f"Default room set to: {current_room}")
+        # Bonjour/Zeroconf setup
+        # Initialize DiscoveryManager here if needed, or ensure it's handled elsewhere
+        global discovery_manager
+        try:
+            discovery_manager = DiscoveryManager()
+            logger.info("DiscoveryManager initialized.")
+        except Exception as disc_err:
+            logger.error(f"Failed to initialize DiscoveryManager: {disc_err}", exc_info=True)
+            discovery_manager = None  # Ensure it's None if init fails
 
-        discovery_manager = DiscoveryManager(logger)
-        actual_ip = get_local_ip()
-        if actual_ip:
-            logger.info(f"Server determined local IP: {actual_ip}. Registering Bonjour service.")
-            discovery_manager.start_discovery(port=args.port, service_name=f"33ter Backend ({args.host}:{args.port})")
-        else:
+        local_ip = get_local_ip()
+        if discovery_manager and local_ip:
+            service_name = f"33ter Backend ({local_ip}:{port})"
+            logger.info(f"Starting Bonjour discovery service: {service_name}")
+            # Assuming start_discovery is synchronous or handled internally
+            discovery_manager.start_discovery(port=port, service_name=service_name)
+        elif not local_ip:
             logger.warning("Could not determine local IP for Bonjour registration or logging.")
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        logger.info("Event loop created and set.")
-
+        # Setup and run the web server
+        logger.info("Setting up AIOHTTP AppRunner...")
         runner = web.AppRunner(app)
         loop.run_until_complete(runner.setup())
-        logger.info("AIOHTTP AppRunner setup complete.")
-        site = web.TCPSite(runner, args.host, args.port)
+        logger.info("AppRunner setup complete.")
+        site = web.TCPSite(runner, host, port)
         loop.run_until_complete(site.start())
-        logger.info("AIOHTTP TCPSite started.")
+        logger.info(f"TCPSite started on http://{host}:{port}")
 
-        startup_msg = f"Running on http://{args.host}:{args.port}"
+        startup_msg = f"Running on http://{host}:{port}"
         logger.info(f"SERVER IS LIVE: {startup_msg}")
-        print(startup_msg, flush=True)
-
-        if config['health_check']['enabled']:
-            logger.info("Starting health check task.")
-            loop.create_task(health_check())
+        print(startup_msg, flush=True)  # Print startup message for ProcessManager
 
         logger.info("Entering main event loop (run_forever).")
-        loop.run_forever()
+        loop.run_forever()  # This blocks until loop.stop() is called
 
     except KeyboardInterrupt:
-        logger.info("Shutdown requested by user (KeyboardInterrupt).")
+        logger.info("KeyboardInterrupt received, shutting down.")
     except Exception as e:
-        log_func = logger.error if logger else print
-        log_func(f"Failed to start or run server: {e}", exc_info=True)
-        sys.exit(1)
+        logger.critical(f"Unhandled exception in main execution: {e}", exc_info=True)
     finally:
-        logger.info("Starting server shutdown sequence...")
-        if discovery_manager:
-            discovery_manager.stop_discovery()
+        logger.info("Starting server shutdown sequence.")
 
-        if runner:
-            if loop and loop.is_running():
-                loop.run_until_complete(runner.cleanup())
-            else:
-                asyncio.run(runner.cleanup())
+        # --- Graceful Shutdown ---
+        # Use the loop variable captured in the try block
+        if loop and loop.is_running():
+            logger.info("Event loop is running, attempting graceful shutdown.")
+            # Schedule cleanup tasks to run on the loop
+            async def shutdown_tasks():
+                nonlocal site, runner  # Allow modification of outer scope variables if needed
+                if site:
+                    logger.info("Stopping TCPSite...")
+                    await site.stop()
+                    logger.info("TCPSite stopped.")
+                if runner:
+                    logger.info("Cleaning up AppRunner...")
+                    await runner.cleanup()
+                    logger.info("AppRunner cleaned up.")
+                # Cancel other pending tasks (excluding self)
+                tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task(loop)]
+                if tasks:
+                    logger.info(f"Cancelling {len(tasks)} outstanding tasks.")
+                    [task.cancel() for task in tasks]
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    logger.info("Outstanding tasks cancelled.")
 
-        if loop and not loop.is_closed():
-            if loop.is_running():
-                loop.stop()
-            tasks = [task for task in asyncio.all_tasks(loop) if task is not asyncio.current_task(loop)]
-            if tasks:
-                logger.info(f"Waiting for {len(tasks)} background tasks to complete...")
-                try:
-                    loop.run_until_complete(asyncio.wait(tasks, timeout=5.0))
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout waiting for background tasks. Forcing shutdown.")
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                    loop.run_until_complete(asyncio.sleep(0))
-            logger.info("Closing event loop.")
-            loop.close()
-        logger.info("Server shutdown complete.")
+            # Run the shutdown tasks and then stop the loop
+            loop.run_until_complete(shutdown_tasks())
+            loop.stop()
+            logger.info("Event loop stopped.")
+
+        elif loop and not loop.is_running():
+            logger.info("Event loop was found but is not running. Minimal cleanup.")
+            # Perform non-async cleanup if needed
+            if discovery_manager:
+                logger.info("Stopping Bonjour discovery (non-async).")
+                discovery_manager.stop_discovery()
+        else:
+            logger.info("No running event loop found. Minimal cleanup.")
+            # Perform non-async cleanup if needed
+            if discovery_manager:
+                logger.info("Stopping Bonjour discovery (non-async).")
+                discovery_manager.stop_discovery()
+
+        logger.info("Server shutdown sequence complete.")
 
     return 0
 
 if __name__ == '__main__':
+    # Ensure logs directory exists before anything else
     try:
         os.makedirs(get_logs_dir(), exist_ok=True)
     except Exception as e:
         print(f"CRITICAL: Failed to create logs directory {get_logs_dir()}: {e}", file=sys.stderr)
-
-    if discovery_manager:
-        atexit.register(discovery_manager.stop_discovery)
 
     sys.exit(main())

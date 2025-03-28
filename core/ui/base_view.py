@@ -4,6 +4,7 @@ import sys
 import importlib.util
 import os
 import time
+import logging # Import logging
 from abc import ABC, abstractmethod
 from .color_scheme import *
 
@@ -43,7 +44,9 @@ class BaseView(ABC):
         try:
             self.stdscr.hline(0, 0, ' ', self.width, curses.color_pair(HEADER_PAIR))
             title = " 33ter Local Backend Monitor "
-            self.stdscr.addstr(0, (self.width - len(title)) // 2, title, curses.color_pair(HEADER_PAIR) | curses.A_BOLD)
+            # Ensure title fits, adjust centering if needed
+            start_col = max(0, (self.width - len(title)) // 2)
+            self.stdscr.addstr(0, start_col, title[:self.width], curses.color_pair(HEADER_PAIR) | curses.A_BOLD)
 
             # Draw view tabs
             tabs = ["1:Status", "2:Screenshot", "3:Debug"]
@@ -51,20 +54,16 @@ class BaseView(ABC):
             for i, tab in enumerate(tabs):
                 view_name = tab.split(":")[1].lower()
                 attr = curses.color_pair(SELECTED_VIEW) | curses.A_BOLD if view_name == current_view else curses.color_pair(HEADER_PAIR)
-                self.stdscr.addstr(1, x_offset, f" {tab} ", attr)
-                x_offset += len(tab) + 3 # Add spacing
+                # Check width before drawing tab
+                if x_offset + len(tab) + 3 < self.width:
+                    self.stdscr.addstr(1, x_offset, f" {tab} ", attr)
+                    x_offset += len(tab) + 3 # Add spacing
+                else:
+                    break # Stop drawing tabs if no more space
 
-            # Draw connection status on the right
-            # Safely get count, default 0
-            ios_clients = self.process_manager.get_ios_client_count()
-            if not isinstance(ios_clients, int):
-                ios_clients = 0
-            conn_status = f"Clients: {ios_clients}"
-            conn_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else HEADER_PAIR)
-            self.stdscr.addstr(0, self.width - len(conn_status) - 2, conn_status, conn_color)
-
-        except curses.error:
-            # Ignore errors if drawing outside screen bounds (e.g., small terminal)
+        except curses.error as e:
+            # Log errors if drawing outside screen bounds (e.g., small terminal)
+            logging.debug(f"Curses error drawing header: {e}")
             pass
 
     def draw_footer(self):

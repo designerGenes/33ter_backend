@@ -4,25 +4,12 @@
     "port": 5348,
     "room": "33ter_room",
     "cors_origins": [
-      "0.0.0.0:*",
-      "0.0.0.0:*",
-      "localhost:*"
+      "*"
     ],
     "log_level": "INFO"
   },
   "health_check": {
     "enabled": true,
     "interval": 30
-  },
-  "host": "0.0.0.0",
-  "port": 5348,
-  "room": "33ter_room",
-  "debug": true,
-  "allow_cors": true,
-  "cors_origins": [
-    "*",
-    "0.0.0.0:*",
-    "0.0.0.0:*",
-    "localhost:*"
-  ]
+  }
 }

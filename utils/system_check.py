@@ -70,7 +70,7 @@ def check_socketio() -> Tuple[bool, str]:
 def check_directories() -> List[Tuple[str, bool, str]]:
     """Check required directories exist and are writable."""
     from utils import (
-        get_app_root,
+        get_project_root,
         get_screenshots_dir,
         get_logs_dir,
         get_temp_dir,
@@ -78,7 +78,7 @@ def check_directories() -> List[Tuple[str, bool, str]]:
     )
     
     dirs = [
-        ("App Root", get_app_root()),
+        ("App Root", get_project_root()),
         ("Config", get_config_dir()),
         ("Screenshots", get_screenshots_dir()),
         ("Logs", get_logs_dir()),

@@ -2,10 +2,15 @@
 import curses
 import time
 import traceback
-import json  # Added json import
+import json
+import logging  # Ensure logging is imported
+
 from .base_view import BaseView
 from .color_scheme import *
 from ..message_system import MessageManager, MessageLevel, MessageCategory
+
+# Get a logger instance for this module
+logger = logging.getLogger(__name__)
 
 class DebugView(BaseView):
     """Debug view for SocketIO messages and client communication."""
@@ -19,18 +24,15 @@ class DebugView(BaseView):
         max_y, max_x = self.height, self.width
         self.win.addstr(1, 2, "Socket.IO Debug Log", curses.A_BOLD | curses.A_UNDERLINE)
 
-        log_lines = self.process_manager.get_output("debug")  # Use MessageManager output
+        # Use MessageManager output directly
+        log_lines = self.process_manager.get_output("debug")
 
         # Calculate visible lines (adjust for header/footer/borders)
         visible_lines = max_y - 4  # Height of the content window
 
-        # Adjust scroll position if necessary
-        if len(log_lines) <= visible_lines:
-            self.scroll_pos = 0
-        elif self.scroll_pos > len(log_lines) - visible_lines:
-            self.scroll_pos = len(log_lines) - visible_lines
-        if self.scroll_pos < 0:
-            self.scroll_pos = 0
+        # Adjust scroll position if necessary (ensure scroll_pos is valid)
+        max_scroll = max(0, len(log_lines) - visible_lines)
+        self.scroll_pos = max(0, min(self.scroll_pos, max_scroll))
 
         # Get the slice of lines to display
         display_lines = log_lines[self.scroll_pos : self.scroll_pos + visible_lines]
@@ -41,34 +43,34 @@ class DebugView(BaseView):
             if y_pos >= max_y - 1:
                 break  # Prevent drawing outside window
 
-            # Basic coloring
+            # Basic coloring based on keywords in the formatted string
             color = curses.A_NORMAL
-            if "ERROR" in line_str:
+            line_upper = line_str.upper()  # Check uppercase for consistency
+            if "[ERROR]" in line_upper or "(error)" in line_upper or "SERVER_STDERR" in line_upper:
                 color = curses.color_pair(STATUS_STOPPED) | curses.A_BOLD
-            elif "WARNING" in line_str:
+            elif "[WARNING]" in line_upper or "(warning)" in line_upper:
                 color = curses.color_pair(MENU_PAIR) | curses.A_BOLD
-            elif "Sending message" in line_str:
-                color = curses.color_pair(CONNECTION_ACTIVE)  # Example: Green for sending
+            elif "SENDING MESSAGE" in line_upper or "(localui)" in line_upper:
+                color = curses.color_pair(CONNECTION_ACTIVE)
 
-            # Handle multi-line JSON-like strings from _add_to_buffer
-            lines_to_draw = line_str.split('\n')
-            current_y = y_pos
-            for line_part in lines_to_draw:
-                if current_y >= max_y - 1:
-                    break
-                try:
-                    # Ensure line part fits width, truncate if necessary
-                    truncated_line = line_part[:max_x - 3]  # Leave space for border
-                    self.win.addstr(current_y, 2, truncated_line, color)
-                except curses.error:
-                    # Ignore errors trying to write outside window bounds
-                    pass
-                current_y += 1
+            try:
+                # Ensure line fits width, truncate if necessary
+                truncated_line = line_str[:max_x - 3]  # Leave space for border
+                self.win.addstr(y_pos, 2, truncated_line, color)
+            except curses.error as e:
+                # Log curses errors if they happen unexpectedly
+                logger.debug(f"Curses error in DebugView draw_content: {e} at y={y_pos}")
+                pass  # Ignore errors trying to write outside window bounds
 
         # Add scroll indicator if needed
         if len(log_lines) > visible_lines:
-            scroll_perc = int((self.scroll_pos / (len(log_lines) - visible_lines)) * 100) if len(log_lines) > visible_lines else 0
+            # Ensure division by zero doesn't happen
+            scroll_base = len(log_lines) - visible_lines
+            scroll_perc = int((self.scroll_pos / scroll_base) * 100) if scroll_base > 0 else 0
             self.win.addstr(max_y - 2, max_x - 10, f"Scroll:{scroll_perc:3d}%", curses.A_REVERSE)
+        else:
+            # Clear scroll indicator area if not needed
+            self.win.addstr(max_y - 2, max_x - 10, " " * 9, curses.A_NORMAL)
 
     def handle_input(self, key):
         """Handle debug view specific input"""
@@ -220,7 +222,7 @@ class DebugView(BaseView):
                          if len(fields[current_field]["value"]) < fields[current_field]["length"]:
                              fields[current_field]["value"] += chr(ch)
             except curses.error as e:
-                 logging.error(f"Error in message input form: {e}")
+                 logger.error(f"Error in message input form: {e}")
                  break # Exit form on error
             except KeyboardInterrupt:
                  break # Exit on Ctrl+C
@@ -234,9 +236,16 @@ class DebugView(BaseView):
     def clear_messages(self):
         """Clear the debug message buffer."""
         # Clear using MessageManager
-        self.message_manager.clear_buffer("debug")
-        self.scroll_pos = 0 # Reset scroll position
-        self.process_manager._add_to_buffer("debug", "Debug log cleared.", "info")
+        self.process_manager.message_manager.clear_buffer("debug")  # Use process_manager's instance
+        self.scroll_pos = 0  # Reset scroll position
+        # Add message via manager
+        self.process_manager.message_manager.add_message(
+            content="Debug log cleared.",
+            level=MessageLevel.INFO,
+            category=MessageCategory.SYSTEM,
+            source="ui_action",
+            buffer_name="debug"
+        )
 
     def get_help_content(self) -> list[tuple[str, str]]:
         """Return help content specific to the Debug view."""
