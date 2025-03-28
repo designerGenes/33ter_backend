@@ -55,6 +55,8 @@ class ProcessManager:
         self.ios_clients_connected = 0
         self.local_connected = False
         self.socketio_client: Optional[socketio.Client] = None
+        self.socketio_client = socketio.Client(logger=self.logger, engineio_logger=self.logger)
+        self._setup_internal_client_handlers()
         self.screenshot_manager = ScreenshotManager()
         self.room_joined = False
 
@@ -123,6 +125,31 @@ class ProcessManager:
             logger.addHandler(console_handler)
 
         return logger
+
+    def _setup_internal_client_handlers(self):
+        """Sets up event handlers for the internal Socket.IO client."""
+        if not self.socketio_client:
+            return
+
+        @self.socketio_client.event
+        def connect():
+            self.logger.info("Internal client connected to Socket.IO server.")
+            self._add_to_buffer("debug", "Internal client connected.", "info")
+            room = self.config['server']['room']
+            self.logger.info(f"Internal client attempting to join room: {room}")
+            self.socketio_client.emit('join_room', {'room': room}, callback=self._internal_client_room_join_callback)
+
+        @self.socketio_client.event
+        def connect_error(data):
+            self.logger.error(f"Internal client connection failed: {data}")
+            self._add_to_buffer("debug", f"ERROR: Internal client connection failed: {data}", "error")
+            self.room_joined = False
+
+        @self.socketio_client.event
+        def disconnect():
+            self.logger.info("Internal client disconnected from Socket.IO server.")
+            self._add_to_buffer("debug", "Internal client disconnected.", "info")
+            self.room_joined = False
 
     def _truncate_message(self, message: Union[str, dict, list]) -> str:
         """Truncate long messages for display purposes."""
@@ -215,6 +242,7 @@ class ProcessManager:
 
         self.logger.info("Socket.IO monitor thread started.")
         startup_message = f"Running on http://{self.config.get('server', {}).get('host', '0.0.0.0')}:{self.config.get('server', {}).get('port', 5348)}"
+        server_url = f"http://{self.config.get('server', {}).get('host', '0.0.0.0')}:{self.config.get('server', {}).get('port', 5348)}"
         self.logger.info(f"Waiting for startup message: '{startup_message}'")
 
         start_time = time.time()
@@ -254,6 +282,18 @@ class ProcessManager:
                                 self.socketio_server_status = "Running"
                                 self.socketio_server_running = True
                                 self._add_to_buffer("status", "Socket.IO Server: Running", "info")
+
+                                if self.socketio_client and not self.socketio_client.connected:
+                                    self.logger.info(f"Attempting to connect internal client to {server_url}...")
+                                    try:
+                                        self.socketio_client.connect(server_url, wait_timeout=5)
+                                    except socketio.exceptions.ConnectionError as ce:
+                                        self.logger.error(f"Internal client failed to connect: {ce}")
+                                        self._add_to_buffer("debug", f"ERROR: Internal client connection failed: {ce}", "error")
+                                    except Exception as e:
+                                        self.logger.error(f"Unexpected error connecting internal client: {e}", exc_info=True)
+                                        self._add_to_buffer("debug", f"ERROR: Unexpected error connecting internal client: {e}", "error")
+
                     elif fd == stderr_fd:
                         line = process.stderr.readline()
                         if line:
@@ -299,6 +339,13 @@ class ProcessManager:
         """Stops the Socket.IO server process."""
         self.logger.info("Stopping Socket.IO server...")
         self._stop_event.set()
+
+        if self.socketio_client and self.socketio_client.connected:
+            self.logger.info("Disconnecting internal Socket.IO client...")
+            try:
+                self.socketio_client.disconnect()
+            except Exception as e:
+                self.logger.error(f"Error disconnecting internal client: {e}", exc_info=True)
 
         if self.socketio_server_process:
             if self.socketio_server_process.poll() is None:
@@ -459,40 +506,52 @@ class ProcessManager:
         """Return the current count of connected iOS clients."""
         return self.ios_clients_connected
 
+    def _log_post_error(self, error_msg: str, exc_info=False):
+        """Logs errors related to posting messages and adds them to buffers."""
+        self.logger.error(error_msg, exc_info=exc_info)
+        self._add_to_buffer("status", f"Socket Post Error: {error_msg}", "error")
+        self._add_to_buffer("debug", f"ERROR: {error_msg}", "error")
+
     def post_message_to_socket(self, value: str, messageType: str):
-        """Post a generic 'message' event to the SocketIO server."""
+        """Post a generic 'message' event to the SocketIO server using the internal client."""
         if not self.socketio_client or not self.socketio_client.connected:
-            error_msg = "SocketIO client not connected. Cannot send message."
+            error_msg = "Internal SocketIO client not connected. Cannot send message."
             self._log_post_error(error_msg)
+            if not self.socketio_client:
+                self.logger.warning("post_message_to_socket: self.socketio_client is None")
+            elif not self.socketio_client.connected:
+                sid = getattr(self.socketio_client, 'sid', 'N/A')
+                self.logger.warning(f"post_message_to_socket: self.socketio_client exists but not connected (sid: {sid})")
             return error_msg
 
         try:
             display_value = self._truncate_message(value)
-            self._add_to_buffer("debug", f"Sending message: type={messageType}, value={display_value}", "info")
+            self._add_to_buffer("debug", f"Sending message via internal client: type={messageType}, value={display_value}", "info")
 
             formatted_message = {
                 "messageType": messageType,
-                "from": "localBackend",
+                "from": "localUI",
                 "value": value
             }
 
             room = self.config['server']['room']
 
             if not self.room_joined:
-                self.logger.warning(f"Not joined to room '{room}', attempting join before sending message.")
-                self.socketio_client.emit('join_room', {'room': room}, callback=self._room_join_callback)
-                time.sleep(0.1)
+                self.logger.warning(f"Internal client not joined to room '{room}', attempting join before sending message.")
+                self.socketio_client.emit('join_room', {'room': room}, callback=self._internal_client_room_join_callback)
+                time.sleep(0.2)
                 if not self.room_joined:
-                    self.logger.error(f"Still not joined to room '{room}' after re-attempt. Message might not be delivered.")
-                    self._add_to_buffer("status", f"Send Warning: Not joined to room '{room}'", "warning")
-                    self._add_to_buffer("debug", f"WARNING: Not joined to room '{room}' when sending message", "warning")
+                    self.logger.error(f"Internal client still not joined to room '{room}' after re-attempt. Message might not be delivered.")
+                    self._add_to_buffer("status", f"Send Warning: Internal client not joined to room '{room}'", "warning")
+                    self._add_to_buffer("debug", f"WARNING: Internal client not joined to room '{room}' when sending message", "warning")
 
             self.socketio_client.emit('message', formatted_message)
+            self.logger.info(f"Internal client emitted message: type={messageType}")
 
             return None
 
         except Exception as e:
-            error_msg = f"Failed to send message via SocketIO: {str(e)}"
+            error_msg = f"Failed to send message via internal SocketIO client: {str(e)}"
             self._log_post_error(error_msg, exc_info=True)
             return error_msg
 
@@ -554,3 +613,14 @@ class ProcessManager:
             return False
         finally:
             self.ocr_lock.release()
+
+    def _internal_client_room_join_callback(self, success):
+        """Callback function for room join attempts by the internal client."""
+        if success:
+            self.logger.info(f"Internal client successfully joined room: {self.config['server']['room']}")
+            self.room_joined = True
+            self._add_to_buffer("debug", f"Internal client joined room '{self.config['server']['room']}'", "info")
+        else:
+            self.logger.error(f"Internal client failed to join room: {self.config['server']['room']}")
+            self.room_joined = False
+            self._add_to_buffer("debug", f"ERROR: Internal client failed to join room '{self.config['server']['room']}'", "error")
