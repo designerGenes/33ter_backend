@@ -282,8 +282,9 @@ class ProcessManager:
             return
 
         self.logger.info("Setting up internal Socket.IO client...")
-        # Enable library logging for detailed insight
-        self.internal_sio_client = socketio.Client(logger=True, engineio_logger=True)
+        # Disable verbose library logging for the internal client
+        # ProcessManager logs essential events to the debug buffer anyway.
+        self.internal_sio_client = socketio.Client(logger=False, engineio_logger=False)
 
         @self.internal_sio_client.event
         def connect():
@@ -321,8 +322,12 @@ class ProcessManager:
         @self.internal_sio_client.on('*')
         def any_event(event, data):
             # Reduce noise by ignoring lower-level engineio events if library logging is on
+            # Since logger/engineio_logger are False, this handler might not receive ping/pong,
+            # but we keep the check just in case.
             if event not in ['ping', 'pong']:
+                # Log non-ping/pong events received by the internal client to the debug buffer
                 self.logger.debug(f"Internal client received event '{event}': {data}")
+                self._add_to_buffer("debug", f"INTERNAL_CLIENT_RECV: Event='{event}', Data='{str(data)[:100]}...'", "info")
 
         self.logger.info("Internal client setup complete.")
 
