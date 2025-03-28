@@ -8,7 +8,10 @@ import subprocess
 import socketio
 import threading
 import traceback
-from typing import Dict, Optional, List, Union, IO
+import select
+from collections import deque
+from typing import Dict, Optional, List, Union, IO, Tuple
+
 from pathlib import Path
 from datetime import datetime
 
@@ -28,6 +31,9 @@ except ImportError as e:
     sys.exit(1)
 
 import glob
+
+SOCKETIO_SERVER_SCRIPT = os.path.join(app_root, "socketio_server", "server.py")
+STARTUP_TIMEOUT = 10  # seconds to wait for server startup message
 
 class ProcessManager:
     """Manages the various service processes for the 33ter application."""
@@ -58,6 +64,12 @@ class ProcessManager:
 
         self.max_display_length = 150
 
+        self.socketio_server_process: Optional[subprocess.Popen] = None
+        self.socketio_server_status = "Stopped"
+        self.socketio_server_running = False
+        self._stop_event = threading.Event()
+        self._monitor_thread: Optional[threading.Thread] = None
+
         self.logger.info("ProcessManager initialized")
         
         # Add diagnostic logging for screenshot configuration
@@ -82,14 +94,33 @@ class ProcessManager:
 
         logger = logging.getLogger('33ter-ProcessManager')
         logger.setLevel(log_level)
+        logger.propagate = False  # Prevent duplicate logging
 
         if not logger.handlers:
-            file_handler = logging.FileHandler(log_file)
+            # Ensure log directory exists
+            try:
+                os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            except OSError as e:
+                print(f"Warning: Could not create log directory for ProcessManager: {e}", file=sys.stderr)
+                # Continue without file logging if directory creation fails
+
             formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+                '%(asctime)s - %(name)s - %(levelname)s - %(threadName)s - %(message)s'
             )
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
+
+            # Attempt to add FileHandler
+            try:
+                file_handler = logging.FileHandler(log_file)
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+            except Exception as e:
+                print(f"Warning: Failed to create file handler for ProcessManager log: {e}", file=sys.stderr)
+
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(formatter)
+            # Set console level based on main log level for ProcessManager itself
+            console_handler.setLevel(log_level)  # Match the logger's level for console output
+            logger.addHandler(console_handler)
 
         return logger
 
@@ -112,53 +143,226 @@ class ProcessManager:
             return message_str[:self.max_display_length] + "... [truncated]"
         return message_str
 
-    def start_service(self, service_name: str):
-        """Start a specific service process."""
-        if service_name in self.processes and self.processes[service_name].poll() is None:
-            self.logger.warning(f"Service {service_name} is already running (PID: {self.processes[service_name].pid})")
-            if service_name == 'socket':
-                if not self.socketio_client or not self.socketio_client.connected:
-                    self.logger.info("Server process running but client not connected. Attempting client connection...")
-                    server_host = self.config['server']['host']
-                    client_host = '127.0.0.1' if server_host == '0.0.0.0' else server_host
-                    port = self.config['server']['port']
-                    room_name = self.config['server']['room']
-                    try:
-                        self._connect_socketio_client(client_host, port, room_name)
-                    except ConnectionError as e:
-                        self.logger.error(f"Failed to connect client to existing server: {e}")
-                        self._add_to_buffer("status", f"Failed reconnect client: {e}", "error")
+    def _start_socketio_server(self):
+        """Starts the Socket.IO server as a subprocess."""
+        if self.socketio_server_process and self.socketio_server_process.poll() is None:
+            self.logger.warning("Socket.IO server already running.")
             return
 
+        server_config = self.config.get('server', {})
+        host = server_config.get('host', '0.0.0.0')
+        port = server_config.get('port', 5348)
+        room = server_config.get('room', '33ter_room')
+        log_level = self.config.get('logging', {}).get('level', 'INFO')
+
+        if not os.path.exists(SOCKETIO_SERVER_SCRIPT):
+            self.logger.error(f"Socket.IO server script not found at: {SOCKETIO_SERVER_SCRIPT}")
+            self.socketio_server_status = "Error: Script not found"
+            self._add_to_buffer("status", self.socketio_server_status, "error")
+            return
+
+        env = os.environ.copy()
+        env['PYTHONPATH'] = app_root + os.pathsep + env.get('PYTHONPATH', '')
+        env['PYTHONUNBUFFERED'] = '1'
+
+        command = [
+            sys.executable,
+            SOCKETIO_SERVER_SCRIPT,
+            '--host', str(host),
+            '--port', str(port),
+            '--room', str(room),
+            '--log-level', log_level
+        ]
+
+        self.logger.info(f"Starting Socket.IO server with command: {' '.join(command)}")
+        self.logger.debug(f"Server environment: {env}")
+        self.socketio_server_status = "Starting..."
+        self._add_to_buffer("status", "Socket.IO Server: Starting...", "info")
+
         try:
-            if service_name == 'socket':
-                self._start_socketio_service()
-            elif service_name == 'screenshot':
-                self.screenshot_manager.start_capturing()
-                self._add_to_buffer("status", "Screenshot capture started", "info")
+            self.socketio_server_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                bufsize=1
+            )
+            self.logger.info(f"Socket.IO server process started (PID: {self.socketio_server_process.pid}).")
 
-            self.logger.info(f"Successfully initiated start for {service_name} service.")
+            self._stop_event.clear()
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_socketio_server,
+                name="SocketIOMonitorThread",
+                daemon=True
+            )
+            self._monitor_thread.start()
 
-        except (FileNotFoundError, RuntimeError, TimeoutError, ConnectionError) as e:
-            self.logger.error(f"Failed to start {service_name} service: {e}")
-            self._add_to_buffer("status", f"Failed start {service_name}: {e}", "error")
-            raise
         except Exception as e:
-            self.logger.error(f"Unexpected error starting {service_name} service: {e}", exc_info=True)
-            self._add_to_buffer("status", f"Unexpected error starting {service_name}: {e}", "error")
-            raise
+            self.logger.error(f"Failed to start Socket.IO server: {e}", exc_info=True)
+            self.socketio_server_status = f"Error: {e}"
+            self._add_to_buffer("status", f"Socket.IO Server: Error - {e}", "error")
+            self.socketio_server_process = None
+            self.socketio_server_running = False
 
-    def _start_socketio_service(self):
-        pass
+    def _monitor_socketio_server(self):
+        """Monitors the Socket.IO server process output for startup and errors."""
+        if not self.socketio_server_process or not self.socketio_server_process.stdout:
+            self.logger.error("Monitor thread started but server process or stdout is invalid.")
+            self.socketio_server_status = "Error: Invalid process"
+            self.socketio_server_running = False
+            return
 
-    def _log_subprocess_output(self, pipe: Optional[IO[str]], prefix: str, output_log: List[str]):
-        pass
+        self.logger.info("Socket.IO monitor thread started.")
+        startup_message = f"Running on http://{self.config.get('server', {}).get('host', '0.0.0.0')}:{self.config.get('server', {}).get('port', 5348)}"
+        self.logger.info(f"Waiting for startup message: '{startup_message}'")
 
-    def _connect_socketio_client(self, client_host: str, port: int, room_name: str):
-        pass
+        start_time = time.time()
+        startup_detected = False
 
-    def _room_join_callback(self, success: bool):
-        pass
+        stdout_lines: Deque[str] = deque(maxlen=50)
+        stderr_lines: Deque[str] = deque(maxlen=50)
+
+        process = self.socketio_server_process
+        stdout_fd = process.stdout.fileno()
+        stderr_fd = process.stderr.fileno()
+
+        os.set_blocking(stdout_fd, False)
+        os.set_blocking(stderr_fd, False)
+
+        while not self._stop_event.is_set():
+            if process.poll() is not None:
+                self.logger.warning(f"Socket.IO server process terminated unexpectedly with code {process.poll()}.")
+                self.socketio_server_status = f"Crashed (Code: {process.poll()})"
+                self.socketio_server_running = False
+                self._add_to_buffer("status", f"Socket.IO Server: {self.socketio_server_status}", "error")
+                break
+
+            ready_to_read, _, _ = select.select([stdout_fd, stderr_fd], [], [], 0.1)
+
+            for fd in ready_to_read:
+                try:
+                    if fd == stdout_fd:
+                        line = process.stdout.readline()
+                        if line:
+                            line = line.strip()
+                            self.logger.debug(f"Server STDOUT: {line}")
+                            stdout_lines.append(line)
+                            if not startup_detected and startup_message in line:
+                                self.logger.info("Socket.IO server startup message detected.")
+                                startup_detected = True
+                                self.socketio_server_status = "Running"
+                                self.socketio_server_running = True
+                                self._add_to_buffer("status", "Socket.IO Server: Running", "info")
+                    elif fd == stderr_fd:
+                        line = process.stderr.readline()
+                        if line:
+                            line = line.strip()
+                            self.logger.warning(f"Server STDERR: {line}")
+                            stderr_lines.append(line)
+                            if "error" in line.lower() and self.socketio_server_status != "Running":
+                                self.socketio_server_status = "Error (see logs)"
+                                self._add_to_buffer("status", f"Socket.IO Server: Error - {line}", "error")
+
+                except Exception as e:
+                    self.logger.error(f"Error reading server output: {e}", exc_info=True)
+                    time.sleep(0.1)
+
+            if not startup_detected and (time.time() - start_time > STARTUP_TIMEOUT):
+                self.logger.error(f"Socket.IO server startup timed out after {STARTUP_TIMEOUT} seconds.")
+                self.socketio_server_status = "Error: Startup Timeout"
+                self.socketio_server_running = False
+                self._add_to_buffer("status", f"Socket.IO Server: {self.socketio_server_status}", "error")
+                self.logger.error("Recent STDOUT:\n" + "\n".join(stdout_lines))
+                self.logger.error("Recent STDERR:\n" + "\n".join(stderr_lines))
+                self._stop_socketio_server(force=True)
+                break
+
+            if not ready_to_read:
+                time.sleep(0.05)
+
+        if self._stop_event.is_set():
+            self.logger.info("Socket.IO monitor thread stopping due to stop event.")
+            if self.socketio_server_running:
+                self.socketio_server_status = "Stopped"
+                self.socketio_server_running = False
+                self._add_to_buffer("status", "Socket.IO Server: Stopped", "info")
+        else:
+            self.logger.info(f"Socket.IO monitor thread finished. Final status: {self.socketio_server_status}")
+
+        if process.poll() is not None:
+            self.socketio_server_running = False
+            if self.socketio_server_status == "Running":
+                self.socketio_server_status = f"Stopped (Code: {process.poll()})"
+
+    def _stop_socketio_server(self, force=False):
+        """Stops the Socket.IO server process."""
+        self.logger.info("Stopping Socket.IO server...")
+        self._stop_event.set()
+
+        if self.socketio_server_process:
+            if self.socketio_server_process.poll() is None:
+                try:
+                    if force:
+                        self.logger.warning("Forcing termination of Socket.IO server.")
+                        self.socketio_server_process.kill()
+                    else:
+                        self.logger.info(f"Sending SIGTERM to Socket.IO server (PID: {self.socketio_server_process.pid}).")
+                        self.socketio_server_process.terminate()
+                    self.socketio_server_process.wait(timeout=5)
+                    self.logger.info("Socket.IO server process terminated.")
+                except subprocess.TimeoutExpired:
+                    self.logger.warning("Socket.IO server did not terminate gracefully, killing.")
+                    self.socketio_server_process.kill()
+                    self.socketio_server_process.wait()
+                except Exception as e:
+                    self.logger.error(f"Error stopping Socket.IO server: {e}", exc_info=True)
+            else:
+                self.logger.info("Socket.IO server process already stopped.")
+
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self.logger.debug("Waiting for monitor thread to join...")
+            self._monitor_thread.join(timeout=2)
+            if self._monitor_thread.is_alive():
+                self.logger.warning("Monitor thread did not join cleanly.")
+        self._monitor_thread = None
+
+        self.socketio_server_process = None
+        self.socketio_server_running = False
+        if self.socketio_server_status not in ["Error: Script not found", "Error: Startup Timeout"] and not self.socketio_server_status.startswith("Crashed"):
+            self.socketio_server_status = "Stopped"
+            self._add_to_buffer("status", "Socket.IO Server: Stopped", "info")
+        self.logger.info("Socket.IO server stop sequence complete.")
+
+    def start_all_services(self):
+        """Starts all managed services."""
+        self.logger.info("Starting all services...")
+        self._start_socketio_server()
+        self.screenshot_manager.start_capturing()
+        self._add_to_buffer("status", "Screenshot Manager: Started", "info")
+        self.logger.info("All services initiated.")
+
+    def stop_all(self):
+        """Stops all managed services gracefully."""
+        self.logger.info("Stopping all services...")
+        self._stop_socketio_server()
+        self.screenshot_manager.stop_capturing()
+        self._add_to_buffer("status", "Screenshot Manager: Stopped", "info")
+        self.logger.info("All services stopped.")
+
+    def get_socketio_status(self) -> str:
+        """Returns the current status of the Socket.IO server."""
+        if self.socketio_server_running and self.socketio_server_process and self.socketio_server_process.poll() is not None:
+            self.logger.warning("Detected Socket.IO server process died unexpectedly.")
+            self.socketio_server_status = f"Crashed (Code: {self.socketio_server_process.poll()})"
+            self.socketio_server_running = False
+            self._add_to_buffer("status", f"Socket.IO Server: {self.socketio_server_status}", "error")
+
+        return self.socketio_server_status
+
+    def get_screenshot_status(self) -> str:
+        """Returns the current status of the Screenshot Manager."""
+        return self.screenshot_manager.get_status()
 
     def _add_to_buffer(self, buffer_name: str, message: str, level: str = "info"):
         """Add a formatted message to a specific output buffer."""
@@ -242,88 +446,6 @@ class ProcessManager:
             buffer_name=buffer_name
         )
 
-    def stop_service(self, service_name: str):
-        """Stop a specific service process."""
-        process = self.processes.pop(service_name, None)
-
-        if service_name == 'socket':
-            if self.socketio_client:
-                self.logger.info("Disconnecting internal SocketIO client...")
-                try:
-                    if self.socketio_client.connected:
-                        self.socketio_client.disconnect()
-                except Exception as e:
-                    self.logger.error(f"Error disconnecting SocketIO client: {e}", exc_info=True)
-                finally:
-                    self.socketio_client = None
-                    self.local_connected = False
-                    self.room_joined = False
-                    self.ios_clients_connected = 0
-                    self.logger.info("Internal SocketIO client state reset.")
-
-            if process and process.poll() is None:
-                pid = process.pid
-                self.logger.info(f"Terminating SocketIO server process (PID: {pid})...")
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                    self.logger.info(f"SocketIO server process (PID: {pid}) terminated.")
-                except subprocess.TimeoutExpired:
-                    self.logger.warning(f"SocketIO server process (PID: {pid}) did not terminate gracefully. Killing...")
-                    process.kill()
-                    process.wait()
-                    self.logger.info(f"SocketIO server process (PID: {pid}) killed.")
-                except Exception as e:
-                    self.logger.error(f"Error terminating SocketIO server process (PID: {pid}): {e}", exc_info=True)
-            elif process:
-                self.logger.info(f"SocketIO server process (PID: {process.pid}) was already stopped.")
-            else:
-                self.logger.info("No running SocketIO server process found to stop.")
-
-            self._add_to_buffer("status", "SocketIO service stopped", "info")
-
-        elif service_name == 'screenshot':
-            self.screenshot_manager.stop_capturing()
-            self._add_to_buffer("status", "Screenshot capture stopped", "info")
-
-        if process or service_name == 'screenshot':
-            self.logger.info(f"Stopped {service_name} service.")
-
-    def restart_service(self, service_name: str):
-        pass
-
-    def start_all_services(self):
-        """Start all required services."""
-        try:
-            self.logger.info("Starting all services...")
-            
-            # First check if configuration is valid
-            if 'screenshot' not in self.config:
-                self.logger.warning("No screenshot section in config, using defaults")
-                
-            # Start SocketIO server first
-            self.start_service('socket')
-            
-            # Then start screenshot capture with careful error handling
-            try:
-                self.start_service('screenshot')
-            except Exception as e:
-                self.logger.error(f"Failed to start screenshot service: {e}", exc_info=True)
-                self._add_to_buffer("status", f"Screenshot service error: {e}", "error")
-                # Continue with other services even if screenshot fails
-                
-            self.logger.info("All services started successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to start all services: {e}", exc_info=True)
-            raise
-
-    def stop_all(self):
-        pass
-
-    def is_process_running(self, service_name: str) -> bool:
-        pass
-
     def get_output(self, service_name: str) -> list:
         """Get the formatted messages for a specific buffer from the MessageManager."""
         valid_buffers = ["status", "debug", "screenshot", "ocr"]
@@ -335,14 +457,7 @@ class ProcessManager:
 
     def get_ios_client_count(self):
         """Return the current count of connected iOS clients."""
-        # Return the stored count, which is initialized to 0
         return self.ios_clients_connected
-
-    def _log_post_error(self, error_msg: str, exc_info=False):
-        """Helper to log errors from post_message_to_socket."""
-        self.logger.error(error_msg, exc_info=exc_info)
-        self._add_to_buffer("status", f"Send Error: {error_msg}", "error")
-        self._add_to_buffer("debug", f"ERROR: {error_msg}", "error")
 
     def post_message_to_socket(self, value: str, messageType: str):
         """Post a generic 'message' event to the SocketIO server."""
@@ -380,12 +495,6 @@ class ProcessManager:
             error_msg = f"Failed to send message via SocketIO: {str(e)}"
             self._log_post_error(error_msg, exc_info=True)
             return error_msg
-
-    def reload_screen(self):
-        pass
-
-    def get_output_queues(self):
-        pass
 
     def process_and_send_ocr_result(self):
         """Process the latest screenshot with OCR and send results to SocketIO room."""

@@ -212,3 +212,19 @@ class ScreenshotManager:
             return self.output_buffer.copy()
             
         return messages
+
+    def get_status(self):
+        """Returns the current status of the Screenshot Manager."""
+        if not self._running:
+            return "Stopped"
+        elif self._paused:
+            return "Paused"
+        else:
+            # Check if the thread is alive as an extra measure
+            if self.capture_thread and self.capture_thread.is_alive():
+                return "Running"
+            else:
+                # If _running is True but thread is dead, something went wrong
+                self.logger.error("ScreenshotManager state inconsistency: _running is True but thread is not alive.")
+                self._running = False  # Correct the state
+                return "Error (Thread Died)"
