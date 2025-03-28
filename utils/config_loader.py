@@ -105,17 +105,38 @@ class ConfigManager:
         if not all(k in config for k in required):
             raise ValueError(f"Missing required frequency config keys: {required}")
             
-        if not (0.1 <= config["frequency"] <= 60.0):
-            raise ValueError("Screenshot frequency must be between 0.1 and 60 seconds")
+        # Handle the case where frequency is None or not a number
+        frequency = config.get("frequency")
+        if frequency is None:
+            config["frequency"] = 4.0  # Default value if None
+            return
             
+        try:
+            frequency_value = float(frequency)
+            if not (0.1 <= frequency_value <= 60.0):
+                logging.warning(f"Screenshot frequency {frequency_value} out of range (0.1-60.0), setting to default.")
+                config["frequency"] = 4.0
+        except (TypeError, ValueError):
+            logging.warning(f"Invalid frequency value: {frequency}, setting to default.")
+            config["frequency"] = 4.0
+    
     def _validate_server_config(self, config: Dict[str, Any]) -> None:
         """Validate server configuration"""
         required = {"host", "port"}
         if not all(k in config for k in required):
             raise ValueError(f"Missing required server config keys: {required}")
             
-        if not isinstance(config["port"], int):
-            raise ValueError("Server port must be an integer")
+        port = config.get("port")
+        if port is None:
+            config["port"] = 5348  # Default port if None
+            return
+            
+        if not isinstance(port, int):
+            try:
+                config["port"] = int(port)
+            except (TypeError, ValueError):
+                logging.warning(f"Invalid port value: {port}, setting to default.")
+                config["port"] = 5348
     
     def get(self, section: str, key: str, default: Any = None) -> Any:
         """
@@ -128,9 +149,19 @@ class ConfigManager:
             Configuration value or default
         """
         try:
-            return self._config[section][key]
-        except KeyError:
+            # First try to get the value from the config
+            value = self._config[section][key]
+            # Check if value is None and a default is provided
+            if value is None and default is not None:
+                return default
+            return value
+        except (KeyError, TypeError):
+            # Return default if section or key doesn't exist
             return default
+    
+    def get_config(self) -> Dict[str, Any]:
+        """Get the complete configuration dictionary."""
+        return self._config.copy()
     
     def set(self, section: str, key: str, value: Any) -> None:
         """

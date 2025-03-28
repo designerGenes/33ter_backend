@@ -8,208 +8,187 @@ from abc import ABC, abstractmethod
 from .color_scheme import *
 
 class BaseView(ABC):
+    """Abstract base class for all terminal UI views."""
     def __init__(self, stdscr, process_manager):
         self.stdscr = stdscr
         self.process_manager = process_manager
         self.height, self.width = stdscr.getmaxyx()
-        self.active = False
-        self.help_active = False
+        # Create a new window for the view content area
+        # Ensure dimensions are valid before creating window
+        win_height = max(1, self.height - 4)
+        win_width = max(1, self.width - 2)
+        win_y = 3
+        win_x = 1
+        self.win = curses.newwin(win_height, win_width, win_y, win_x)
+        self.win.keypad(True) # Enable special keys
+        self.view_name = "Base" # Should be overridden by subclasses
         self.show_help = False
-        self.view_name = "base"
-        self.reload_feedback_time = 0
-        self.reload_feedback_duration = 0.5  # seconds
-        
-    def on_activate(self):
-        """Called when view becomes active."""
-        self.active = True
-        self.height, self.width = self.stdscr.getmaxyx()
 
-    def on_deactivate(self):
-        """Called when view becomes inactive."""
-        self.active = False
+    def resize(self, height, width):
+        """Handle terminal resize."""
+        self.height, self.width = height, width
+        try:
+            # Ensure dimensions are valid before resizing
+            new_height = max(1, height - 4)
+            new_width = max(1, width - 2)
+            self.win.resize(new_height, new_width)
+            # Optionally move the window if needed, e.g., self.win.mvwin(3, 1)
+        except curses.error as e:
+            # Handle potential errors during resize, e.g., size too small
+            # Log this error?
+            pass # Avoid crashing on resize errors
 
-    def check_size(self):
-        """Update window dimensions and check if they changed."""
-        new_h, new_w = self.stdscr.getmaxyx()
-        if new_h != self.height or new_w != self.width:
-            self.height, self.width = new_h, new_w
-            return True
-        return False
+    def draw_header(self, current_view):
+        """Draw the common header."""
+        try:
+            self.stdscr.hline(0, 0, ' ', self.width, curses.color_pair(HEADER_PAIR))
+            title = " 33ter Local Backend Monitor "
+            self.stdscr.addstr(0, (self.width - len(title)) // 2, title, curses.color_pair(HEADER_PAIR) | curses.A_BOLD)
 
-    def draw_menu(self):
-        """Draw the application header and menu."""
-        header = "33ter"
-        self.stdscr.addstr(0, 0, "=" * self.width, curses.color_pair(HEADER_PAIR))
-        self.stdscr.addstr(1, (self.width - len(header)) // 2, header, 
-                          curses.color_pair(HEADER_PAIR) | curses.A_BOLD)
-        
-        # Menu items
-        menu_items = [
-            ("[1]Status", "status"),
-            ("[2]Screenshot", "screenshot"),
-            ("[3]Debug", "debug")
-        ]
-        
-        quit_text = "[Q]uit"
-        help_text = "[?]Help"
-        
-        # Calculate positions
-        total_menu_width = sum(len(item[0]) + 2 for item in menu_items)
-        total_width = len(quit_text) + total_menu_width + len(help_text) + 2
-        start_pos = (self.width - total_width) // 2
-        
-        # Draw menu bar
-        self.stdscr.addstr(2, start_pos, quit_text, curses.color_pair(MENU_PAIR))
-        current_pos = start_pos + len(quit_text) + 1
-        
-        for item, view in menu_items:
-            color = get_view_color(view) if self.view_name == view else curses.color_pair(MENU_PAIR)
-            if self.view_name == view:
-                self.stdscr.addstr(2, current_pos, f"|{item}|", color | curses.A_BOLD)
-            else:
-                self.stdscr.addstr(2, current_pos, f" {item} ", color)
-            current_pos += len(item) + 2
-        
-        self.stdscr.addstr(2, current_pos, help_text, curses.color_pair(MENU_PAIR))
-        self.stdscr.addstr(3, 0, "=" * self.width, curses.color_pair(HEADER_PAIR))
+            # Draw view tabs
+            tabs = ["1:Status", "2:Screenshot", "3:Debug"]
+            x_offset = 2
+            for i, tab in enumerate(tabs):
+                view_name = tab.split(":")[1].lower()
+                attr = curses.color_pair(SELECTED_VIEW) | curses.A_BOLD if view_name == current_view else curses.color_pair(HEADER_PAIR)
+                self.stdscr.addstr(1, x_offset, f" {tab} ", attr)
+                x_offset += len(tab) + 3 # Add spacing
 
-    def draw(self):
-        """Draw the view content."""
-        if self.check_size():
-            self.stdscr.clear()
-        self.draw_menu()
-        self.draw_content()
-        self.draw_reload_feedback()
+            # Draw connection status on the right
+            # Safely get count, default 0
+            ios_clients = self.process_manager.get_ios_client_count()
+            if not isinstance(ios_clients, int):
+                ios_clients = 0
+            conn_status = f"Clients: {ios_clients}"
+            conn_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else HEADER_PAIR)
+            self.stdscr.addstr(0, self.width - len(conn_status) - 2, conn_status, conn_color)
+
+        except curses.error:
+            # Ignore errors if drawing outside screen bounds (e.g., small terminal)
+            pass
+
+    def draw_footer(self):
+        """Draw the common footer."""
+        try:
+            footer_text = " (q) Quit | (h) Help "
+            self.stdscr.hline(self.height - 1, 0, ' ', self.width, curses.color_pair(MENU_PAIR))
+            self.stdscr.addstr(self.height - 1, 1, footer_text, curses.color_pair(MENU_PAIR))
+            # Add time or other status if needed
+            current_time = time.strftime("%H:%M:%S")
+            self.stdscr.addstr(self.height - 1, self.width - len(current_time) - 2, current_time, curses.color_pair(MENU_PAIR))
+        except curses.error:
+            # Ignore errors if drawing outside screen bounds
+            pass
 
     @abstractmethod
     def draw_content(self):
-        """Draw the view-specific content."""
+        """Draw the specific content for the view. Must be implemented by subclasses."""
         pass
-
-    def handle_input(self, key):
-        """Handle common input across all views."""
-        if key == ord('?'):
-            self.help_active = not self.help_active
-            return True
-        elif key == 18:  # Ctrl-R
-            try:
-                # First attempt ProcessManager notification
-                self.process_manager.reload_screen()
-                # Then do the actual code reload
-                self.reload_view()
-                # Set feedback time for visual indicator
-                self.reload_feedback_time = time.time()
-                return True
-            except Exception as e:
-                self.process_manager.get_output_queues()["debug"].append(
-                    f"Reload failed: {str(e)}")
-        return False
-
-    def reload_view(self):
-        """Reload the current view's module from disk."""
-        try:
-            # Get the current module's file path
-            module_file = sys.modules[self.__class__.__module__].__file__
-            
-            # Remove the module from sys.modules to force a fresh reload
-            module_name = self.__class__.__module__
-            if module_name in sys.modules:
-                del sys.modules[module_name]
-            
-            # Load the module spec
-            spec = importlib.util.spec_from_file_location(module_name, module_file)
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
-            
-            # Get the view class and create new instance
-            view_class = getattr(module, self.__class__.__name__)
-            new_view = view_class(self.stdscr, self.process_manager)
-            
-            # Preserve important state
-            new_view.height = self.height
-            new_view.width = self.width
-            new_view.show_help = self.show_help
-            
-            # Update self with new instance's attributes
-            self.__class__ = view_class
-            self.__dict__.update(new_view.__dict__)
-            
-        except Exception as e:
-            # Log error but don't crash
-            with open(os.path.join(os.path.dirname(module_file), "reload_error.log"), "w") as f:
-                f.write(f"Error reloading view: {str(e)}")
-
-    def show_help(self, title, help_lines):
-        """Show help overlay with the given content."""
-        if not help_lines:
-            return
-            
-        box_height = len(help_lines) + 4
-        box_width = max(len(line) for line in help_lines) + 4
-        start_y = (self.height - box_height) // 2
-        start_x = (self.width - box_width) // 2
-        
-        # Create help window
-        help_win = curses.newwin(box_height, box_width, start_y, start_x)
-        help_win.box()
-        
-        # Draw title
-        help_win.addstr(0, (box_width - len(title)) // 2, f" {title} ", 
-                       get_view_color(self.view_name) | curses.A_BOLD)
-        
-        # Draw help content
-        for i, line in enumerate(help_lines):
-            if line.endswith(":"):  # Headers
-                help_win.addstr(i + 2, 2, line, curses.A_BOLD)
-            else:
-                help_win.addstr(i + 2, 2, line)
-                
-        # Draw footer
-        help_win.addstr(box_height-1, 2, "Press ESC to close",
-                       curses.color_pair(MENU_PAIR))
-        
-        help_win.refresh()
-        
-        # Wait for ESC
-        while True:
-            ch = help_win.getch()
-            if ch == 27:  # ESC
-                break
-        
-        # Cleanup
-        help_win.clear()
-        help_win.refresh()
-        del help_win
-        self.stdscr.touchwin()
-        self.stdscr.refresh()
-
-    def draw_header(self, title):
-        """Draw a header for the view."""
-        view_header = f"=== {title} ==="
-        self.stdscr.addstr(4, (self.width - len(view_header)) // 2, 
-                          view_header, curses.A_BOLD)
-
-    def draw_controls(self, controls, y_pos):
-        """Draw control instructions."""
-        try:
-            self.stdscr.addstr(y_pos, 2, controls, curses.color_pair(MENU_PAIR))
-        except curses.error:
-            pass
-
-    def get_help_title(self):
-        """Get the help screen title."""
-        return f"{self.view_name.title()} View Help"
 
     @abstractmethod
-    def get_help_content(self):
-        """Get the help screen content lines."""
+    def get_help_content(self) -> list[tuple[str, str]]:
+        """Return a list of (key, description) tuples for the help overlay. Must be implemented."""
+        # Example: return [("q", "Quit"), ("h", "Toggle Help")]
         pass
 
-    def draw_reload_feedback(self):
-        """Draw reload feedback if recently reloaded."""
-        if time.time() - self.reload_feedback_time < self.reload_feedback_duration:
-            text = "⟳ Reloaded"
-            x = self.width - len(text) - 2
-            y = 0  # Top right corner
-            self.stdscr.addstr(y, x, text, curses.A_BOLD | curses.color_pair(STATUS_RUNNING))
+    def draw_help_overlay(self):
+        """Draw the help overlay."""
+        help_content = self.get_help_content()
+        if not help_content:
+            return # Don't draw if no content
+
+        # Calculate overlay dimensions
+        max_key_len = max(len(key) for key, desc in help_content) if help_content else 0
+        max_desc_len = max(len(desc) for key, desc in help_content) if help_content else 0
+        box_width = max(30, max_key_len + max_desc_len + 7) # Key: Desc
+        box_height = len(help_content) + 4 # Title + content + padding
+
+        # Center the box
+        start_y = (self.height - box_height) // 2
+        start_x = (self.width - box_width) // 2
+
+        # Ensure coordinates are valid
+        if start_y < 0 or start_x < 0 or start_y + box_height > self.height or start_x + box_width > self.width:
+             # Too small to draw help overlay, maybe show a message?
+             try:
+                  self.win.addstr(1, 2, "Terminal too small for help", curses.A_BOLD | curses.color_pair(STATUS_STOPPED))
+             except curses.error: pass
+             return
+
+        try:
+            help_win = curses.newwin(box_height, box_width, start_y, start_x)
+            help_win.erase()
+            help_win.box()
+            help_win.addstr(1, (box_width - 10) // 2, " Help Menu ", curses.A_BOLD | curses.A_UNDERLINE)
+
+            for i, (key, desc) in enumerate(help_content):
+                help_win.addstr(i + 3, 3, f"{key.upper():<{max_key_len}} : {desc}")
+
+            help_win.refresh()
+
+            # Wait for any key press to close
+            self.stdscr.nodelay(False) # Blocking wait for key
+            self.stdscr.getch()
+            self.stdscr.nodelay(True) # Restore non-blocking
+
+            # Clean up - redraw underlying screen elements
+            self.stdscr.touchwin()
+            self.stdscr.refresh()
+            del help_win
+
+        except curses.error as e:
+             # Log error if help overlay fails
+             logging.error(f"Failed to draw help overlay: {e}")
+             # Try to restore terminal state
+             self.stdscr.nodelay(True)
+
+
+    def draw(self):
+        """Draw the entire view (header, content, footer)."""
+        try:
+            # Get dimensions each time in case of resize
+            self.height, self.width = self.stdscr.getmaxyx()
+            self.resize(self.height, self.width) # Adjust window size
+
+            self.stdscr.erase() # Clear entire screen
+            self.win.erase() # Clear content window
+
+            self.draw_header(self.view_name)
+            self.draw_content() # Call subclass implementation
+            self.draw_footer()
+
+            # Refresh the main screen and the content window
+            self.stdscr.noutrefresh()
+            self.win.noutrefresh()
+            curses.doupdate()
+
+            if self.show_help:
+                self.draw_help_overlay()
+                self.show_help = False # Automatically hide after showing once
+
+        except curses.error as e:
+            # Log errors related to drawing (e.g., terminal too small)
+            logging.error(f"Error drawing view {self.view_name}: {e}")
+            # Attempt to draw a minimal error message if possible
+            try:
+                 self.stdscr.erase()
+                 self.stdscr.addstr(0, 0, f"Error drawing UI: {e}. Please resize terminal.")
+                 self.stdscr.refresh()
+            except:
+                 pass # Avoid further errors
+
+    def handle_input(self, key):
+        """Handle common input keys."""
+        if key == ord('h'):
+            self.show_help = True
+            return True # Indicate input was handled
+        elif key == curses.KEY_RESIZE:
+             # Let the main loop handle resize by redrawing
+             self.height, self.width = self.stdscr.getmaxyx()
+             self.resize(self.height, self.width)
+             # Force redraw
+             self.stdscr.clear()
+             self.win.clear()
+             return True
+        # Allow subclasses to handle other keys or return False
+        return False

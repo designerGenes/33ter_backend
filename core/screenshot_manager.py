@@ -52,6 +52,10 @@ class ScreenshotManager:
         
         self.load_screenshot_config()
         
+        # State flags
+        self._running = False
+        self._paused = False
+
     def _setup_logging(self):
         """Configure screenshot manager logging."""
         log_file = os.path.join(get_logs_dir(), "screenshot_manager.log")
@@ -118,13 +122,19 @@ class ScreenshotManager:
         self.logger.info("Starting screenshot capture loop")
         self._add_to_buffer("Screenshot capture started")
         
+        self._running = True
+        self._paused = False
+
         while self.capturing:
             try:
                 # Check for pause signal
                 pause_file = os.path.join(get_temp_dir(), "signal_pause_capture")
                 if os.path.exists(pause_file):
+                    self._paused = True
                     time.sleep(1)  # Sleep briefly while paused
                     continue
+                else:
+                    self._paused = False
                 
                 # Capture screenshot
                 filepath = self.ocr_processor.capture_screenshot()
@@ -153,6 +163,8 @@ class ScreenshotManager:
                 self.logger.error(f"Error in capture loop: {e}")
                 self._add_to_buffer(f"Error: {str(e)}", "warning")
                 time.sleep(1)  # Brief sleep on error before retry
+
+        self._running = False
 
     def start_capturing(self):
         """Start the screenshot capture process."""
@@ -185,6 +197,10 @@ class ScreenshotManager:
     def is_capturing(self):
         """Check if screenshot capture is active."""
         return self.capturing and (self.capture_thread is not None and self.capture_thread.is_alive())
+
+    def is_running(self):
+        """Check if the capture loop is running and not paused."""
+        return self._running and not self._paused
 
     def get_output(self):
         """Get the current output buffer."""

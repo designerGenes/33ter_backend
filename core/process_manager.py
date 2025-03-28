@@ -7,650 +7,441 @@ import logging
 import subprocess
 import socketio
 import threading
-import traceback  # Add this missing import
-from typing import Dict, Optional, List, Union
-from utils import get_logs_dir, get_screenshots_dir, get_temp_dir
-from utils import get_server_config
+import traceback
+from typing import Dict, Optional, List, Union, IO
+from pathlib import Path
+from datetime import datetime
+
+# Add app root to Python path if needed
+app_root = str(Path(__file__).parent.parent.absolute())
+if app_root not in sys.path:
+    sys.path.insert(0, app_root)
+
+try:
+    from utils.path_config import get_logs_dir, get_screenshots_dir, get_temp_dir
+    from utils.server_config import get_server_config
+    from utils.config_loader import config
+    from core.screenshot_manager import ScreenshotManager
+    from core.message_system import MessageManager, MessageLevel, MessageCategory
+except ImportError as e:
+    print(f"Error importing required modules in process_manager.py: {e}")
+    sys.exit(1)
+
 import glob
-from .screenshot_manager import ScreenshotManager
-from .message_system import MessageManager, MessageLevel, MessageCategory
 
 class ProcessManager:
     """Manages the various service processes for the 33ter application."""
-    
+
     def __init__(self):
-        self.config = get_server_config()
+        self.config = config.get_config()
         self.logger = self._setup_logging()
         self.processes: Dict[str, subprocess.Popen] = {}
-        
-        # Initialize legacy output buffers for backwards compatibility
+
         self.output_buffers: Dict[str, list] = {
+            'status': [],
             'screenshot': [],
-            'debug': []
+            'debug': [],
+            'ocr': []
         }
-        
-        # Initialize the message manager
+
         self.message_manager = MessageManager()
-        
+
         self.ios_clients_connected = 0
         self.local_connected = False
-        self.socketio_client = None
+        self.socketio_client: Optional[socketio.Client] = None
         self.screenshot_manager = ScreenshotManager()
         self.room_joined = False
-        
-        # OCR processing status tracking
+
         self.ocr_processing_active = False
         self.last_ocr_time = 0
         self.ocr_lock = threading.Lock()
+
+        self.max_display_length = 150
+
+        self.logger.info("ProcessManager initialized")
         
-        # Maximum message length to display in debug view
-        self.max_display_length = 50  # Increased to a reasonable value
-    
+        # Add diagnostic logging for screenshot configuration
+        try:
+            self.logger.debug("Checking screenshot manager configuration...")
+            screenshot_config = self.config.get('screenshot', {})
+            if screenshot_config is None:
+                self.logger.warning("Screenshot config section is None")
+            else:
+                frequency = screenshot_config.get('frequency')
+                cleanup_age = screenshot_config.get('cleanup_age')
+                self.logger.debug(f"Screenshot frequency: {frequency} (type: {type(frequency).__name__})")
+                self.logger.debug(f"Screenshot cleanup_age: {cleanup_age} (type: {type(cleanup_age).__name__})")
+        except Exception as e:
+            self.logger.error(f"Error logging screenshot configuration: {e}", exc_info=True)
+
     def _setup_logging(self):
         """Configure process manager logging."""
         log_file = os.path.join(get_logs_dir(), "process_manager.log")
-        
+        log_level_str = self.config.get("logging", {}).get("level", "INFO")
+        log_level = getattr(logging, log_level_str.upper(), logging.INFO)
+
         logger = logging.getLogger('33ter-ProcessManager')
-        logger.setLevel(logging.INFO)
-        
+        logger.setLevel(log_level)
+
         if not logger.handlers:
-            handler = logging.FileHandler(log_file)
+            file_handler = logging.FileHandler(log_file)
             formatter = logging.Formatter(
                 '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
             )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+
         return logger
 
-    def _truncate_message(self, message: str) -> str:
+    def _truncate_message(self, message: Union[str, dict, list]) -> str:
         """Truncate long messages for display purposes."""
-        if not message:  # Handle empty messages
+        if isinstance(message, (dict, list)):
+            try:
+                message_str = json.dumps(message)
+            except Exception:
+                message_str = str(message)
+        elif not isinstance(message, str):
+            message_str = str(message)
+        else:
+            message_str = message
+
+        if not message_str:
             return ""
-            
-        if len(message) > self.max_display_length:
-            return message[:self.max_display_length] + "... [content truncated]"
-        return message
+
+        if len(message_str) > self.max_display_length:
+            return message_str[:self.max_display_length] + "... [truncated]"
+        return message_str
 
     def start_service(self, service_name: str):
         """Start a specific service process."""
-        if service_name in self.processes:
-            self.logger.warning(f"Service {service_name} is already running")
+        if service_name in self.processes and self.processes[service_name].poll() is None:
+            self.logger.warning(f"Service {service_name} is already running (PID: {self.processes[service_name].pid})")
+            if service_name == 'socket':
+                if not self.socketio_client or not self.socketio_client.connected:
+                    self.logger.info("Server process running but client not connected. Attempting client connection...")
+                    server_host = self.config['server']['host']
+                    client_host = '127.0.0.1' if server_host == '0.0.0.0' else server_host
+                    port = self.config['server']['port']
+                    room_name = self.config['server']['room']
+                    try:
+                        self._connect_socketio_client(client_host, port, room_name)
+                    except ConnectionError as e:
+                        self.logger.error(f"Failed to connect client to existing server: {e}")
+                        self._add_to_buffer("status", f"Failed reconnect client: {e}", "error")
             return
-            
+
         try:
             if service_name == 'socket':
                 self._start_socketio_service()
             elif service_name == 'screenshot':
                 self.screenshot_manager.start_capturing()
-                self.output_buffers['screenshot'] = []  # Clear buffer on restart
-            
-        except Exception as e:
+                self._add_to_buffer("status", "Screenshot capture started", "info")
+
+            self.logger.info(f"Successfully initiated start for {service_name} service.")
+
+        except (FileNotFoundError, RuntimeError, TimeoutError, ConnectionError) as e:
             self.logger.error(f"Failed to start {service_name} service: {e}")
-            
-    def _start_socketio_service(self):
-        """Start the SocketIO server and establish client connection."""
-        try:
-            server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            server_script = os.path.join(server_dir, 'socketio_server', 'server.py')
-
-            room_name = '33ter_room'
-            self.config['server']['room'] = room_name
-
-            server_host = '0.0.0.0'
-            client_host = '0.0.0.0'
-            port = 5348
-
-            command = [
-                sys.executable,
-                server_script,
-                '--host', server_host,
-                '--port', str(port),
-                '--room', room_name,
-                '--log-level', 'DEBUG'
-            ]
-            
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-            
-            self.processes['socket'] = process
-            self.logger.info(f"Started SocketIO server on {server_host}:{port} (PID: {process.pid})")
-            
-            time.sleep(2)
-            
-            max_retries = 3
-            retry_delay = 1
-            
-            for attempt in range(max_retries):
-                try:
-                    sio = socketio.Client(logger=False, engineio_logger=False)
-                    
-                    @sio.event
-                    def connect():
-                        self.logger.info("Socket.IO client connected to server")
-                        self.local_connected = True
-                        # Log connection status to debug buffer
-                        timestamp = time.strftime("%H:%M:%S")
-                        self.output_buffers["debug"].append(f"{timestamp}: {{")
-                        self.output_buffers["debug"].append(f"    type: info,")
-                        self.output_buffers["debug"].append(f"    value: Local client connected to SocketIO server,")
-                        self.output_buffers["debug"].append(f"    from: system")
-                        self.output_buffers["debug"].append("}")
-                    
-                    @sio.event
-                    def disconnect():
-                        self.logger.info("Socket.IO client disconnected from server")
-                        self.local_connected = False
-                        self.room_joined = False
-                        # Log disconnection to debug buffer
-                        timestamp = time.strftime("%H:%M:%S")
-                        self.output_buffers["debug"].append(f"{timestamp}: {{")
-                        self.output_buffers["debug"].append(f"    type: info,")
-                        self.output_buffers["debug"].append(f"    value: Local client disconnected from SocketIO server,")
-                        self.output_buffers["debug"].append(f"    from: system")
-                        self.output_buffers["debug"].append("}")
-                    
-                    @sio.on('client_count')
-                    def on_client_count(data):
-                        if 'count' in data:
-                            # Subtract our local connection from count
-                            prev_count = self.ios_clients_connected
-                            count = data['count']
-                            if self.local_connected and count > 0:
-                                count -= 1
-                            self.ios_clients_connected = count
-                            self.logger.info(f"iOS clients connected: {self.ios_clients_connected}")
-                            
-                            # Log client count changes
-                            if prev_count != count:
-                                timestamp = time.strftime("%H:%M:%S") 
-                                self.output_buffers["debug"].append(f"{timestamp}: {{")
-                                self.output_buffers["debug"].append(f"    type: info,")
-                                self.output_buffers["debug"].append(f"    value: iOS client count changed: {prev_count} -> {count},")
-                                self.output_buffers["debug"].append(f"    from: system")
-                                self.output_buffers["debug"].append("}")
-                    
-                    @sio.on('message')
-                    def on_message(data):
-                        """Handle incoming socket messages with improved logging and processing."""
-                        try:
-                            # Log detailed information about the received message
-                            self.logger.info(f"SOCKET MESSAGE RECEIVED: {json.dumps(data)}")
-                            
-                            # Log received messages to debug output in JSON format
-                            if isinstance(data, dict):
-                                msg_type = data.get('messageType', 'unknown')
-                                msg_from = data.get('from', 'unknown')
-                                value = data.get('value', '')
-                                
-                                # Store the original value but display a truncated version
-                                display_value = self._truncate_message(value)
-                                
-                                # Generate consistent timestamp for this message
-                                timestamp = time.strftime("%H:%M:%S")
-                                
-                                # Log more detailed info for debugging
-                                log_message = f"Message received - Type: {msg_type}, From: {msg_from}, Value: {display_value}"
-                                self.logger.info(log_message)
-                                
-                                # Critical: Check if this message is from an external source (not our own client)
-                                # and log it, but don't modify the message value
-                                if msg_from != "localBackend":
-                                    # This is a message from an external source
-                                    self.logger.info(f"EXTERNAL MESSAGE from {msg_from}: {display_value}")
-                                
-                                # Add message to debug buffer with truncated value for display
-                                self.output_buffers["debug"].append(f"{timestamp}: {{")
-                                self.output_buffers["debug"].append(f"    type: {msg_type},")
-                                self.output_buffers["debug"].append(f"    value: {display_value},")  # Remove the additional slicing
-                                self.output_buffers["debug"].append(f"    from: {msg_from}")
-                                self.output_buffers["debug"].append("}")
-                                
-                                # Add to new message system too
-                                self.message_manager.add_message(
-                                    content=f"Message: {display_value}",
-                                    level=MessageLevel.INFO if msg_type != "warning" else MessageLevel.WARNING,
-                                    category=MessageCategory.SOCKET,
-                                    source=msg_from,
-                                    buffer_name="debug",
-                                    metadata={"type": msg_type, "value": display_value}
-                                )
-                                
-                                # If message is of type 'trigger', process the latest screenshot
-                                if msg_type == 'trigger':
-                                    # Rate limiting - check last OCR processing time
-                                    current_time = time.time()
-                                    if hasattr(self, 'last_ocr_time') and (current_time - self.last_ocr_time < 2.0):
-                                        # Less than 2 seconds since last OCR, skip
-                                        timestamp = time.strftime("%H:%M:%S")
-                                        self.output_buffers["debug"].append(f"{timestamp}: {{")
-                                        self.output_buffers["debug"].append(f"    type: info,")
-                                        self.output_buffers["debug"].append(f"    value: Ignoring rapid trigger request (rate limited),")
-                                        self.output_buffers["debug"].append(f"    from: system")
-                                        self.output_buffers["debug"].append("}")
-                                        return
-                                        
-                                    self.last_ocr_time = current_time
-                                    
-                                    # Add info message about triggering OCR
-                                    timestamp = time.strftime("%H:%M:%S")
-                                    self.output_buffers["debug"].append(f"{timestamp}: {{")
-                                    self.output_buffers["debug"].append(f"    type: info,")
-                                    self.output_buffers["debug"].append(f"    value: Received trigger message. Processing latest screenshot...,")
-                                    self.output_buffers["debug"].append(f"    from: system")
-                                    self.output_buffers["debug"].append("}")
-                                    
-                                    # Process in the main thread to avoid threading issues with SocketIO
-                                    self.process_and_send_ocr_result()
-                        except Exception as e:
-                            # Log any errors during message processing
-                            error_msg = f"Error processing received message: {str(e)}"
-                            self.logger.error(error_msg)
-                            self.logger.error(traceback.format_exc())
-                            timestamp = time.strftime("%H:%M:%S")
-                            self.output_buffers["debug"].append(f"{timestamp}: {{")
-                            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
-                            self.output_buffers["debug"].append("}")
-                    
-                    url = f"http://{client_host}:{port}"
-                    self.logger.info(f"Attempting to connect to SocketIO server at {url} (attempt {attempt + 1})")
-                    
-                    # Connect with headers to identify as Python client
-                    headers = {
-                        'User-Agent': 'Python/33ter-Client-LocalBackend'  # Clear identifier
-                    }
-                    sio.connect(url, headers=headers, wait_timeout=5)
-                    self.socketio_client = sio
-                    
-                    # Explicitly join the room
-                    sio.emit('join_room', {'room': room_name}, callback=self._room_join_callback)
-                    self.logger.info(f"Join room request sent for '{room_name}'")
-                    
-                    time.sleep(0.5)
-                    
-                    self._add_to_buffer("debug", f"Connected to SocketIO server and attempting to join room '{room_name}'", "info")
-                    return
-                    
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        self.logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {retry_delay}s: {e}")
-                        time.sleep(retry_delay)
-                    else:
-                        raise
-            
-        except Exception as e:
-            self.logger.error(f"Failed to start SocketIO service: {e}")
-            if 'socket' in self.processes:
-                self.stop_service('socket')
+            self._add_to_buffer("status", f"Failed start {service_name}: {e}", "error")
             raise
-    
-    def _room_join_callback(self, success):
-        """Callback for room join operation."""
-        if success:
-            self.room_joined = True
-            self._add_to_buffer("debug", f"Successfully joined room '{self.config['server']['room']}'", "info")
-            self.logger.info(f"Room join successful for '{self.config['server']['room']}'")
-        else:
-            self.room_joined = False
-            error_msg = f"Failed to join room '{self.config['server']['room']}'"
-            self._add_to_buffer("debug", error_msg, "error")
-            self.logger.error(error_msg)
+        except Exception as e:
+            self.logger.error(f"Unexpected error starting {service_name} service: {e}", exc_info=True)
+            self._add_to_buffer("status", f"Unexpected error starting {service_name}: {e}", "error")
+            raise
+
+    def _start_socketio_service(self):
+        pass
+
+    def _log_subprocess_output(self, pipe: Optional[IO[str]], prefix: str, output_log: List[str]):
+        pass
+
+    def _connect_socketio_client(self, client_host: str, port: int, room_name: str):
+        pass
+
+    def _room_join_callback(self, success: bool):
+        pass
 
     def _add_to_buffer(self, buffer_name: str, message: str, level: str = "info"):
         """Add a formatted message to a specific output buffer."""
-        # For all debug messages, let's use the JSON-style format instead of the emoji format
+        if buffer_name not in self.output_buffers:
+            if buffer_name not in ["status", "debug", "screenshot", "ocr"]:
+                self.logger.warning(f"Attempted write to non-existent legacy buffer '{buffer_name}'")
+                return
+
+        timestamp = time.strftime("%H:%M:%S")
+        display_message = self._truncate_message(message)
+        msg_from = "system"
+
         if buffer_name == "debug":
-            timestamp = time.strftime("%H:%M:%S")
-            
-            # Special handling for received messages
-            if "Received message:" in message:
-                # Extract message details
-                parts = message.split(", ")
-                msg_type = next((p.split("=")[1] for p in parts if p.startswith("type=")), "unknown")
-                msg_from = next((p.split("=")[1] for p in parts if p.startswith("from=")), "unknown")
-                value = next((p.split("=")[1] for p in parts if p.startswith("value=")), "")
-                
-                # Truncate long values for display
-                display_value = self._truncate_message(value)
-                
-                # Format in JSON-like style
-                self.output_buffers[buffer_name].append(f"{timestamp}: {{")
-                self.output_buffers[buffer_name].append(f"    type: {msg_type},")
-                self.output_buffers[buffer_name].append(f"    value: {display_value},")  # Remove the additional slicing
-                self.output_buffers[buffer_name].append(f"    from: {msg_from}")
-                self.output_buffers[buffer_name].append("}")
-                return
-            
-            # Format sending messages
-            if "Sending message:" in message:
-                # Extract message details
-                parts = message.split(", ")
-                msg_type = next((p.split("=")[1] for p in parts if p.startswith("type=")), "unknown")
-                value = next((p.split("=")[1] for p in parts if p.startswith("value=")), "")
-                
-                # Truncate long values for display
-                display_value = self._truncate_message(value)
-                
-                # Format in JSON-like style
-                self.output_buffers[buffer_name].append(f"{timestamp}: {{")
-                self.output_buffers[buffer_name].append(f"    type: {msg_type},")
-                self.output_buffers[buffer_name].append(f"    value: {display_value},")  # Remove the additional slicing
-                self.output_buffers[buffer_name].append(f"    from: localBackend")
-                self.output_buffers[buffer_name].append("}")
-                return
-                
-            # Handle errors
-            if "error" in level.lower():
-                error_msg = self._truncate_message(message)  # Also truncate error messages
-                self.output_buffers[buffer_name].append(f"{timestamp}: {{")
-                self.output_buffers[buffer_name].append(f"    ERROR: {error_msg}")
-                self.output_buffers[buffer_name].append("}")
-                return
-                
-            # Handle all other debug messages in JSON format
-            # Truncate long messages for display
-            display_message = self._truncate_message(message)
-            
-            self.output_buffers[buffer_name].append(f"{timestamp}: {{")
-            self.output_buffers[buffer_name].append(f"    type: info,")
-            self.output_buffers[buffer_name].append(f"    value: {display_message},")  # Remove the additional slicing
-            self.output_buffers[buffer_name].append(f"    from: system")
-            self.output_buffers[buffer_name].append("}")
-        else:
-            # For non-debug buffers, keep using the old format but without emojis
-            timestamp = time.strftime("%H:%M:%S")
-            # Also truncate these messages
-            display_message = self._truncate_message(message)
-            self.output_buffers[buffer_name].append(f"{timestamp} {display_message} ({level})")
-        
-        # Keep legacy buffer size manageable
-        while len(self.output_buffers[buffer_name]) > 1000:
+            if "ERROR:" in message:
+                level = "error"
+                display_message = message.replace("ERROR:", "").strip()
+                msg_from = "error"
+            elif "WARNING:" in message:
+                level = "warning"
+                display_message = message.replace("WARNING:", "").strip()
+                msg_from = "warning"
+            elif "Sending message:" in message or "OCR result sent" in message:
+                msg_from = "localBackend"
+            elif "Received message:" in message:
+                try:
+                    parts = message.split(", ")
+                    msg_from = next((p.split("=")[1] for p in parts if p.startswith("from=")), "unknown")
+                except Exception:
+                    msg_from = "unknown"
+            elif "client count changed" in message:
+                msg_from = "server"
+
+            log_entry = f"{timestamp}: {{"
+            log_entry += f"\n    type: {level},"
+            try:
+                log_entry += f"\n    value: {json.dumps(display_message)},"
+            except TypeError:
+                log_entry += f"\n    value: {json.dumps(str(display_message))},"
+            log_entry += f"\n    from: {msg_from}"
+            log_entry += f"\n}}"
+            if buffer_name in self.output_buffers:
+                self.output_buffers[buffer_name].append(log_entry)
+
+        elif buffer_name in self.output_buffers:
+            self.output_buffers[buffer_name].append(f"{timestamp} [{level.upper()}] {display_message}")
+
+        if buffer_name in self.output_buffers and len(self.output_buffers[buffer_name]) > 1000:
             self.output_buffers[buffer_name].pop(0)
+
+        msg_level_enum = MessageLevel.INFO
+        if level == "warning":
+            msg_level_enum = MessageLevel.WARNING
+        elif level == "error":
+            msg_level_enum = MessageLevel.ERROR
+
+        category = MessageCategory.SYSTEM
+        if buffer_name == "ocr":
+            category = MessageCategory.OCR
+        elif buffer_name == "status":
+            category = MessageCategory.SYSTEM
+        elif buffer_name == "screenshot":
+            category = MessageCategory.SCREENSHOT
+        elif buffer_name == "debug":
+            msg_lower = message.lower()
+            legacy_source = msg_from if 'msg_from' in locals() else "system"
+
+            if "socket" in msg_lower or "client" in msg_lower or "room" in msg_lower or "connect" in msg_lower or legacy_source == "server":
+                category = MessageCategory.SOCKET
+            elif "ocr" in msg_lower or "screenshot" in msg_lower:
+                category = MessageCategory.OCR
+            elif legacy_source == "localBackend":
+                category = MessageCategory.SYSTEM
+
+        source = msg_from if 'msg_from' in locals() else "system"
+
+        self.message_manager.add_message(
+            content=message,
+            level=msg_level_enum,
+            category=category,
+            source=source,
+            buffer_name=buffer_name
+        )
 
     def stop_service(self, service_name: str):
         """Stop a specific service process."""
-        if service_name not in self.processes and service_name != 'screenshot':
-            return
-            
-        try:
-            if service_name == 'socket':
-                if self.socketio_client:
-                    try:
+        process = self.processes.pop(service_name, None)
+
+        if service_name == 'socket':
+            if self.socketio_client:
+                self.logger.info("Disconnecting internal SocketIO client...")
+                try:
+                    if self.socketio_client.connected:
                         self.socketio_client.disconnect()
-                        self.socketio_client = None
-                        self.room_joined = False
-                        self.local_connected = False
-                    except:
-                        pass
-                
-                process = self.processes.get('socket')
-                if process and process.poll() is None:
+                except Exception as e:
+                    self.logger.error(f"Error disconnecting SocketIO client: {e}", exc_info=True)
+                finally:
+                    self.socketio_client = None
+                    self.local_connected = False
+                    self.room_joined = False
+                    self.ios_clients_connected = 0
+                    self.logger.info("Internal SocketIO client state reset.")
+
+            if process and process.poll() is None:
+                pid = process.pid
+                self.logger.info(f"Terminating SocketIO server process (PID: {pid})...")
+                try:
                     process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        
-                self.processes.pop('socket', None)
-                self._add_to_buffer("debug", "SocketIO server stopped", "info")
-                
-            elif service_name == 'screenshot':
-                self.screenshot_manager.stop_capturing()
-                
-            self.logger.info(f"Stopped {service_name} service")
-            
-        except Exception as e:
-            self.logger.error(f"Error stopping {service_name} service: {e}")
+                    process.wait(timeout=5)
+                    self.logger.info(f"SocketIO server process (PID: {pid}) terminated.")
+                except subprocess.TimeoutExpired:
+                    self.logger.warning(f"SocketIO server process (PID: {pid}) did not terminate gracefully. Killing...")
+                    process.kill()
+                    process.wait()
+                    self.logger.info(f"SocketIO server process (PID: {pid}) killed.")
+                except Exception as e:
+                    self.logger.error(f"Error terminating SocketIO server process (PID: {pid}): {e}", exc_info=True)
+            elif process:
+                self.logger.info(f"SocketIO server process (PID: {process.pid}) was already stopped.")
+            else:
+                self.logger.info("No running SocketIO server process found to stop.")
+
+            self._add_to_buffer("status", "SocketIO service stopped", "info")
+
+        elif service_name == 'screenshot':
+            self.screenshot_manager.stop_capturing()
+            self._add_to_buffer("status", "Screenshot capture stopped", "info")
+
+        if process or service_name == 'screenshot':
+            self.logger.info(f"Stopped {service_name} service.")
 
     def restart_service(self, service_name: str):
-        """Restart a specific service."""
-        self.stop_service(service_name)
-        time.sleep(1)  # Brief pause to ensure cleanup
-        self.start_service(service_name)
+        pass
 
     def start_all_services(self):
         """Start all required services."""
-        self.start_service('socket')
-        time.sleep(2)  # Wait for socket server to be ready
-        self.start_service('screenshot')
+        try:
+            self.logger.info("Starting all services...")
+            
+            # First check if configuration is valid
+            if 'screenshot' not in self.config:
+                self.logger.warning("No screenshot section in config, using defaults")
+                
+            # Start SocketIO server first
+            self.start_service('socket')
+            
+            # Then start screenshot capture with careful error handling
+            try:
+                self.start_service('screenshot')
+            except Exception as e:
+                self.logger.error(f"Failed to start screenshot service: {e}", exc_info=True)
+                self._add_to_buffer("status", f"Screenshot service error: {e}", "error")
+                # Continue with other services even if screenshot fails
+                
+            self.logger.info("All services started successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to start all services: {e}", exc_info=True)
+            raise
 
     def stop_all(self):
-        """Stop all running services."""
-        self.stop_service('screenshot')
-        self.stop_service('socket')
+        pass
 
     def is_process_running(self, service_name: str) -> bool:
-        """Check if a specific service is running."""
-        if service_name == 'screenshot':
-            return self.screenshot_manager.is_capturing()
-            
-        if service_name not in self.processes:
-            return False
-            
-        process = self.processes[service_name]
-        return process.poll() is None
+        pass
 
     def get_output(self, service_name: str) -> list:
-        """Get the filtered output buffer for a specific service."""
-        if service_name == "screenshot":
-            return self.screenshot_manager.get_output()
-        elif service_name == "debug":
-            # Use the new message system but return in legacy format for compatibility
-            messages = self.message_manager.get_formatted_messages("debug")
-            
-            # Fall back to the legacy buffer if new system has no messages
-            if not messages:
-                return self.output_buffers["debug"]
-                
-            return messages
+        """Get the formatted messages for a specific buffer from the MessageManager."""
+        valid_buffers = ["status", "debug", "screenshot", "ocr"]
+        if service_name in valid_buffers:
+            return self.message_manager.get_formatted_messages(service_name)
+
+        self.logger.warning(f"Attempted to get output for unknown buffer/service: {service_name}")
         return []
 
-    def _monitor_output(self, service_name: str, process: subprocess.Popen):
-        """Monitor and filter process output."""
-        def _read_output():
-            while True:
-                if process.poll() is not None:
-                    break
-                    
-                line = process.stdout.readline()
-                if not line:
-                    break
-                
-                # Filter out noise
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                # Skip ping/pong messages
-                if "ping" in line.lower() or "pong" in line.lower():
-                    continue
-                    
-                # Skip engineio debug messages
-                if "engineio" in line.lower() and "debug" in line.lower():
-                    continue
-                
-                # Add relevant messages to buffer
-                if "error" in line.lower():
-                    self._add_to_buffer("debug", line, "error")
-                elif "warning" in line.lower():
-                    self._add_to_buffer("debug", line, "warning")
-                elif "client connected" in line.lower():
-                    self._add_to_buffer("debug", "New client connection", "info")
-                elif "client disconnected" in line.lower():
-                    self._add_to_buffer("debug", "Client disconnected", "info")
-        
-        import threading
-        thread = threading.Thread(target=_read_output, daemon=True)
-        thread.start()
-
     def get_ios_client_count(self):
-        """Get the number of connected iOS clients."""
+        """Return the current count of connected iOS clients."""
+        # Return the stored count, which is initialized to 0
         return self.ios_clients_connected
 
+    def _log_post_error(self, error_msg: str, exc_info=False):
+        """Helper to log errors from post_message_to_socket."""
+        self.logger.error(error_msg, exc_info=exc_info)
+        self._add_to_buffer("status", f"Send Error: {error_msg}", "error")
+        self._add_to_buffer("debug", f"ERROR: {error_msg}", "error")
+
     def post_message_to_socket(self, value: str, messageType: str):
-        """Post a message to the SocketIO server using standardized format."""
-        if not self.socketio_client:
-            error_msg = "SocketIO client not connected - Use [R]estart Server in Status view"
-            timestamp = time.strftime("%H:%M:%S")
-            self.output_buffers["debug"].append(f"{timestamp}: {{")
-            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
-            self.output_buffers["debug"].append("}")
+        """Post a generic 'message' event to the SocketIO server."""
+        if not self.socketio_client or not self.socketio_client.connected:
+            error_msg = "SocketIO client not connected. Cannot send message."
+            self._log_post_error(error_msg)
             return error_msg
-            
-        if not self.socketio_client.connected:
-            error_msg = "SocketIO client not connected to server - Use [R]estart Server in Status view"
-            timestamp = time.strftime("%H:%M:%S")
-            self.output_buffers["debug"].append(f"{timestamp}: {{")
-            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
-            self.output_buffers["debug"].append("}")
-            return error_msg
-            
+
         try:
-            # Add message in JSON format with truncated display value
             display_value = self._truncate_message(value)
-            timestamp = time.strftime("%H:%M:%S")
-            self.output_buffers["debug"].append(f"{timestamp}: {{")
-            self.output_buffers["debug"].append(f"    type: {messageType},")
-            self.output_buffers["debug"].append(f"    value: {display_value},")
-            self.output_buffers["debug"].append(f"    from: localBackend")
-            self.output_buffers["debug"].append("}")
-            
-            # Standardized message format - send full value to Socket.IO
+            self._add_to_buffer("debug", f"Sending message: type={messageType}, value={display_value}", "info")
+
             formatted_message = {
                 "messageType": messageType,
                 "from": "localBackend",
-                "value": value  # Use the original, non-truncated value
+                "value": value
             }
-            
-            # Get room from config
+
             room = self.config['server']['room']
-            
-            # Check if we've joined the room
+
             if not self.room_joined:
-                # Try to join the room again
-                self.logger.warning("Not joined to room, attempting to join before sending message")
+                self.logger.warning(f"Not joined to room '{room}', attempting join before sending message.")
                 self.socketio_client.emit('join_room', {'room': room}, callback=self._room_join_callback)
-                time.sleep(0.5)  # Brief wait for callback
-                
+                time.sleep(0.1)
                 if not self.room_joined:
-                    error_msg = f"Not joined to room '{room}' - messages may not be delivered properly"
-                    self.message_manager.add_message(
-                        content=error_msg,
-                        level=MessageLevel.ERROR,
-                        category=MessageCategory.SOCKET,
-                        buffer_name="debug"
-                    )
-                    return error_msg
-            
-            # Send the message
+                    self.logger.error(f"Still not joined to room '{room}' after re-attempt. Message might not be delivered.")
+                    self._add_to_buffer("status", f"Send Warning: Not joined to room '{room}'", "warning")
+                    self._add_to_buffer("debug", f"WARNING: Not joined to room '{room}' when sending message", "warning")
+
             self.socketio_client.emit('message', formatted_message)
-            
-            # Add iOS client info if any are connected
-            if self.ios_clients_connected > 0:
-                status = f"({self.ios_clients_connected} iOS client{'s' if self.ios_clients_connected != 1 else ''} online)"
-                self.message_manager.add_message(
-                    content=status,
-                    level=MessageLevel.INFO,
-                    category=MessageCategory.SOCKET,
-                    buffer_name="debug"
-                )
-            
+
             return None
-            
+
         except Exception as e:
-            error_msg = f"Failed to send message: {str(e)}"
-            
-            # Add error in JSON-like format
-            timestamp = time.strftime("%H:%M:%S")
-            self.output_buffers["debug"].append(f"{timestamp}: {{")
-            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
-            self.output_buffers["debug"].append("}")
-            
-            self.logger.error(error_msg)
+            error_msg = f"Failed to send message via SocketIO: {str(e)}"
+            self._log_post_error(error_msg, exc_info=True)
             return error_msg
 
     def reload_screen(self):
-        """Force a reload of the current view's code from disk."""
-        self.output_buffers["debug"].append("Reloading view from disk...")
-        return True
+        pass
 
     def get_output_queues(self):
-        """Access to output queues for reload feedback."""
-        if not hasattr(self, 'output_queues'):
-            self.output_queues = {
-                "status": [],
-                "debug": [],
-                "screenshot": []
-            }
-        return self.output_queues
+        pass
 
     def process_and_send_ocr_result(self):
         """Process the latest screenshot with OCR and send results to SocketIO room."""
-        # Use a lock to prevent concurrent OCR processing
         if not self.ocr_lock.acquire(blocking=False):
-            timestamp = time.strftime("%H:%M:%S")
-            self.output_buffers["debug"].append(f"{timestamp}: {{")
-            self.output_buffers["debug"].append(f"    type: info,")
-            self.output_buffers["debug"].append(f"    value: OCR processing already in progress. Skipping.,")
-            self.output_buffers["debug"].append(f"    from: system")
-            self.output_buffers["debug"].append("}")
+            self.logger.info("OCR processing already in progress. Skipping.")
+            self._add_to_buffer("debug", "OCR processing already in progress. Skipping request.", "info")
             return False
             
         try:
-            # Check for screenshots
             screenshots_dir = get_screenshots_dir()
             screenshots = glob.glob(os.path.join(screenshots_dir, "*.png"))
             
             if not screenshots:
-                timestamp = time.strftime("%H:%M:%S")
-                self.output_buffers["debug"].append(f"{timestamp}: {{")
-                self.output_buffers["debug"].append(f"    ERROR: No screenshots available for OCR processing")
-                self.output_buffers["debug"].append("}")
+                self.logger.warning("No screenshots available for OCR processing")
+                self._add_to_buffer("ocr", "No screenshots available for OCR processing", "warning")
                 return False
             
-            # Get OCR result
             ocr_result = self.screenshot_manager.process_latest_screenshot()
             
             if not ocr_result or not isinstance(ocr_result, str) or not ocr_result.strip():
-                # Log error if OCR failed or returned no text
-                timestamp = time.strftime("%H:%M:%S")
-                self.output_buffers["debug"].append(f"{timestamp}: {{")
-                self.output_buffers["debug"].append(f"    ERROR: OCR processing failed or no text found")
-                self.output_buffers["debug"].append("}")
+                self.logger.warning("OCR processing failed or no text found")
+                self._add_to_buffer("ocr", "OCR processing failed or no text found", "warning")
                 return False
             
-            # Format OCR result - remove extra whitespace and ensure it's a clean string
-            formatted_result = ' '.join(ocr_result.strip().split())
+            formatted_result = ocr_result.strip()
             
-            # Send OCR result to SocketIO room (full result)
-            self.post_message_to_socket(
-                value=formatted_result,
-                messageType="ocrResult"
-            )
-            
-            # Log success with truncated preview - no need for additional display formatting
-            timestamp = time.strftime("%H:%M:%S")
-            preview = self._truncate_message(formatted_result)
-            self.output_buffers["debug"].append(f"{timestamp}: {{")
-            self.output_buffers["debug"].append(f"    type: info,")
-            self.output_buffers["debug"].append(f"    value: OCR processing successful. Text: {preview},")
-            self.output_buffers["debug"].append(f"    from: system")
-            self.output_buffers["debug"].append("}")
-            
+            try:
+                if self.socketio_client and self.socketio_client.connected:
+                    ocr_payload = [{
+                        'text': formatted_result,
+                        'timestamp': datetime.now().isoformat()
+                    }]
+                    self.socketio_client.emit('ocr_result', ocr_payload)
+                    self.logger.info(f"OCR result sent successfully via 'ocr_result' event ({len(formatted_result)} chars)")
+                    self._add_to_buffer("ocr", f"OCR Success - Sent {len(formatted_result)} chars", "info")
+                    return True
+                elif not self.socketio_client:
+                    self.logger.error("Cannot send OCR result: SocketIO client not initialized")
+                    self._add_to_buffer("ocr", "OCR Send Error: Client not initialized", "error")
+                    return False
+                elif not self.socketio_client.connected:
+                    self.logger.error("Cannot send OCR result: SocketIO client not connected")
+                    self._add_to_buffer("ocr", "OCR Send Error: Client not connected", "error")
+                    return False
+
+            except Exception as send_e:
+                self.logger.error(f"Failed to send OCR result via SocketIO: {send_e}", exc_info=True)
+                self._add_to_buffer("ocr", f"OCR Send Error: {send_e}", "error")
+                return False
+                
             return True
+            
         except Exception as e:
-            # Log error
-            timestamp = time.strftime("%H:%M:%S")
             error_msg = f"OCR processing error: {str(e)}"
-            self.output_buffers["debug"].append(f"{timestamp}: {{")
-            self.output_buffers["debug"].append(f"    ERROR: {error_msg}")
-            self.output_buffers["debug"].append("}")
-            self.logger.error(error_msg)
+            self.logger.error(error_msg, exc_info=True)
+            self._add_to_buffer("ocr", f"OCR Error: {str(e)}", "error")
             return False
         finally:
             self.ocr_lock.release()

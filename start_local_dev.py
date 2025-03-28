@@ -66,6 +66,20 @@ def setup_environment() -> Optional[ProcessManager]:
             
         os.environ["TESSDATA_PREFIX"] = "/opt/homebrew/share/tessdata/"
         
+        # Check for critical configuration
+        try:
+            sc_config = config.get('screenshot', None)
+            if sc_config is None:
+                logging.warning("No screenshot configuration found, using defaults")
+                # Add default screenshot config to prevent None comparisons
+                config.set('screenshot', 'frequency', 4.0)
+                config.set('screenshot', 'cleanup_age', 180)
+        except Exception as config_error:
+            logging.warning(f"Error checking screenshot configuration: {config_error}")
+            # Set defaults explicitly to avoid None comparisons
+            config.set('screenshot', 'frequency', 4.0)
+            config.set('screenshot', 'cleanup_age', 180)
+        
         # Initialize process manager
         process_manager = ProcessManager()
         return process_manager
@@ -81,52 +95,71 @@ def main() -> int:
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug logging')
     args = parser.parse_args()
-    
+
     # Configure logging
     if args.debug:
         config.set("logging", "level", value="DEBUG")
     setup_logging()
-    
+
     # Log startup
     logging.info("33ter Process Manager starting...")
-    
+
+    process_manager = None # Initialize to None for finally block
     try:
         # Perform system checks
         if not args.skip_checks:
             if not print_system_status():
                 logging.error("System check failed. Please fix the issues above.")
                 return 1
-        
+
         # Initialize environment
         process_manager = setup_environment()
         if not process_manager:
             return 1
-        
+
         # Initialize UI
         terminal_ui = TerminalUI(process_manager)
-        
+
+        # Start services with additional error handling
         try:
-            # Start services
             process_manager.start_all_services()
-            
-            # Run the UI
+        except Exception as service_error:
+            logging.error(f"Error starting services: {service_error}", exc_info=True)
+            # Optionally decide if you want to exit or continue to UI
+            # return 1 # Exit if services are critical
+
+        # Run the UI - Wrap this specifically to catch errors during UI run
+        try:
             curses.wrapper(terminal_ui.run)
-            
-        except KeyboardInterrupt:
-            logging.info("Shutdown requested by user...")
-        except curses.error as e:
-            logging.error(f"Terminal UI error: {e}")
-            return 1
-        finally:
-            # Stop all services
-            process_manager.stop_all()
-        
-        logging.info("Application shutdown complete")
-        return 0
-        
+        except Exception as ui_error:
+            # Log the specific error encountered during curses UI execution
+            logging.error(f"Error during Terminal UI execution: {ui_error}", exc_info=True)
+            # Ensure curses state is cleaned up if possible
+            try:
+                curses.endwin()
+            except:
+                pass
+            print(f"\nTerminal UI crashed: {ui_error}", file=sys.stderr)
+            print("Check app.log and process_manager.log for details.", file=sys.stderr)
+            return 1 # Indicate failure
+
+    except KeyboardInterrupt:
+        logging.info("Shutdown requested by user...")
     except Exception as e:
-        logging.error(f"Unhandled error: {e}")
+        # Catch any other unhandled errors during setup
+        logging.error(f"Unhandled error during setup: {e}", exc_info=True)
         return 1
+    finally:
+        # Ensure services are stopped even if errors occurred
+        if process_manager:
+            logging.info("Initiating service shutdown...")
+            process_manager.stop_all()
+        else:
+            logging.info("Process manager not initialized, skipping service shutdown.")
+
+        logging.info("Application shutdown complete")
+
+    return 0 # Indicate success if we reach here
 
 if __name__ == "__main__":
     sys.exit(main())

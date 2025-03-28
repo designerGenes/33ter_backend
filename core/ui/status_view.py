@@ -1,5 +1,6 @@
 """Status view implementation for the terminal UI."""
 import curses
+import time
 from .base_view import BaseView
 from .color_scheme import *
 
@@ -10,80 +11,74 @@ class StatusView(BaseView):
 
     def draw_content(self):
         """Draw the status view content."""
-        self.draw_header("SERVER STATUS")
-        
-        # Draw command bar immediately after header
-        command_bar = "[R]estart Server  [S]top/Start Server  [L]ogs  [C]lear"
-        self.draw_controls(command_bar, 6)
-        
-        # Draw separator
-        self.stdscr.addstr(7, 0, "=" * self.width, curses.color_pair(HEADER_PAIR))
-        
-        # Start content from line 8
-        y_pos = 8
-        
-        # Socket Server Status
-        socket_running = self.process_manager.is_process_running("socket")
-        status_color = curses.color_pair(STATUS_RUNNING if socket_running else STATUS_STOPPED)
-        status_text = "RUNNING" if socket_running else "STOPPED"
-        
-        self.stdscr.addstr(8, 2, "SocketIO Server: ", get_view_color("status"))
-        self.stdscr.addstr(status_text, status_color | curses.A_BOLD)
-        
-        # Screenshot Service Status
-        screenshot_running = self.process_manager.is_process_running("screenshot")
-        screenshot_status = "RUNNING" if screenshot_running else "STOPPED"
-        screenshot_color = curses.color_pair(STATUS_RUNNING if screenshot_running else STATUS_STOPPED)
-        
-        self.stdscr.addstr(9, 2, "Screenshot Service: ", get_view_color("status"))
-        self.stdscr.addstr(screenshot_status, screenshot_color | curses.A_BOLD)
-        
-        # iOS Connections
-        ios_clients = self.process_manager.get_ios_client_count()
-        ios_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
-        ios_icon = "📱" if ios_clients > 0 else "❌"
-        
-        self.stdscr.addstr(11, 2, "Connected iOS Clients: ", get_view_color("status"))
-        self.stdscr.addstr(f"{ios_icon} {ios_clients}", ios_color | curses.A_BOLD)
-        
-        # Server Info
-        if socket_running:
-            config = self.process_manager.config["server"]
-            self.stdscr.addstr(13, 2, "Server Configuration:", get_view_color("status") | curses.A_BOLD)
-            self.stdscr.addstr(14, 4, f"Address: {config['host']}:{config['port']}", get_view_color("status"))
-            self.stdscr.addstr(15, 4, f"Room: {config['room']}", get_view_color("status"))
-        
-        # Controls
-        self.draw_controls("[R]estart Server  [S]top/Start Server  [?]Help", self.height-2)
+        max_y, max_x = self.height, self.width
+        try:
+            # Service Status Section
+            self.win.addstr(1, 2, "Service Status", curses.A_BOLD | curses.A_UNDERLINE)
 
-    def get_help_content(self):
-        """Get help content for status view."""
+            # Placeholder: Replace with actual status checks
+            socket_status = self.process_manager.is_process_running('socket')
+            screenshot_status = self.process_manager.screenshot_manager.is_running()
+
+            socket_color = curses.color_pair(STATUS_RUNNING if socket_status else STATUS_STOPPED)
+            screenshot_color = curses.color_pair(STATUS_RUNNING if screenshot_status else STATUS_STOPPED)
+
+            self.win.addstr(3, 4, "SocketIO Server: ")
+            self.win.addstr("Running" if socket_status else "Stopped", socket_color | curses.A_BOLD)
+
+            self.win.addstr(4, 4, "Screenshot Capture: ")
+            self.win.addstr("Running" if screenshot_status else "Stopped", screenshot_color | curses.A_BOLD)
+
+            # Connection Status Section
+            self.win.addstr(6, 2, "Connection Status", curses.A_BOLD | curses.A_UNDERLINE)
+
+            # Safely get iOS client count, default to 0 if None or not an int
+            ios_clients = self.process_manager.get_ios_client_count()
+            if not isinstance(ios_clients, int):
+                 ios_clients = 0 # Default to 0 if the value is None or unexpected type
+
+            local_connected = self.process_manager.local_connected
+            room_joined = self.process_manager.room_joined
+
+            ios_color = curses.color_pair(CONNECTION_ACTIVE if ios_clients > 0 else STATUS_STOPPED)
+            local_color = curses.color_pair(CONNECTION_ACTIVE if local_connected else STATUS_STOPPED)
+            room_color = curses.color_pair(CONNECTION_ACTIVE if room_joined else STATUS_STOPPED)
+
+            self.win.addstr(8, 4, f"iOS Clients Connected: {ios_clients}", ios_color | curses.A_BOLD)
+            self.win.addstr(9, 4, f"Local Client Connected: {'Yes' if local_connected else 'No'}", local_color | curses.A_BOLD)
+            self.win.addstr(10, 4, f"Joined Room: {'Yes' if room_joined else 'No'}", room_color | curses.A_BOLD)
+
+            # Log Output Section
+            self.win.addstr(12, 2, "Status Log", curses.A_BOLD | curses.A_UNDERLINE)
+
+            log_lines = self.process_manager.get_output("status")
+
+            # Display last few log lines
+            start_line = max(0, len(log_lines) - (max_y - 15)) # Calculate how many lines fit
+            for i, line in enumerate(log_lines[start_line:]):
+                draw_y = 14 + i
+                if draw_y >= max_y - 1: break # Prevent writing outside window
+
+                # Basic coloring based on level
+                color = curses.A_NORMAL
+                if "[ERROR]" in line:
+                    color = curses.color_pair(STATUS_STOPPED) | curses.A_BOLD
+                elif "[WARNING]" in line:
+                    color = curses.color_pair(MENU_PAIR) | curses.A_BOLD
+
+                # Truncate line safely
+                safe_line = line[:max_x-5]
+                self.win.addstr(draw_y, 4, safe_line, color)
+
+        except curses.error as e:
+             # Ignore drawing errors (e.g., terminal too small)
+             pass
+
+    def get_help_content(self) -> list[tuple[str, str]]:
+        """Return help content specific to the Status view."""
         return [
-            "This view shows the current state of all services",
-            "and iOS client connections.",
-            "",
-            "Controls:",
-            "R: Restart SocketIO server",
-            "S: Start/Stop server",
-            "1-3: Switch between views",
-            "Q: Quit application",
-            "",
-            "Status Indicators:",
-            "📱 Active iOS connection",
-            "❌ No iOS clients connected",
-            "RUNNING: Service is active",
-            "STOPPED: Service is inactive"
+            ("1, 2, 3", "Switch Views (Status, Screenshot, Debug)"),
+            ("q", "Quit Application"),
+            ("h", "Toggle Help"),
+            # Add any Status view specific help here if needed
         ]
-
-    def handle_input(self, key):
-        """Handle status view specific input."""
-        if super().handle_input(key):  # Handle help overlay
-            return
-            
-        if key == ord('r'):
-            self.process_manager.restart_service('socket')
-        elif key == ord('s'):
-            if self.process_manager.is_process_running('socket'):
-                self.process_manager.stop_service('socket')
-            else:
-                self.process_manager.start_service('socket')

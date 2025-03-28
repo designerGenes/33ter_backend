@@ -4,85 +4,99 @@ import json
 import curses
 import sys
 import subprocess
+import logging  # Import logging
 from .base_view import BaseView
 from .color_scheme import *
-from utils import get_temp_dir, get_frequency_config_file
+from utils import get_temp_dir, get_frequency_config_file, get_screenshots_dir
 
 class ScreenshotView(BaseView):
     def __init__(self, stdscr, process_manager):
         super().__init__(stdscr, process_manager)
         self.view_name = "screenshot"
-        self.current_frequency = 4.0
+        self.current_frequency = 4.0  # Default
+        self.is_paused = False
         self.load_screenshot_frequency()
 
     def draw_content(self):
         """Draw the screenshot view content."""
-        self.draw_header("SCREENSHOT LOG")
-        
-        # Service status
-        pause_file = os.path.join(get_temp_dir(), "signal_pause_capture")
-        status = "PAUSED" if os.path.exists(pause_file) else "RUNNING"
-        status_color = curses.color_pair(STATUS_STOPPED if status == "PAUSED" else STATUS_RUNNING)
-        status_icon = "⏸️ " if status == "PAUSED" else "▶️ "
-        
-        self.stdscr.addstr(6, 2, f"Status: ", get_view_color("screenshot"))
-        self.stdscr.addstr(f"{status_icon}{status}", status_color | curses.A_BOLD)
+        max_y, max_x = self.height, self.width
+        try:
+            self.win.addstr(1, 2, "Screenshot Settings & Log", curses.A_BOLD | curses.A_UNDERLINE)
 
-        # Frequency control
-        freq_width = int((self.current_frequency / 10.0) * 20)
-        freq_bar = "▍" * freq_width + "░" * (20 - freq_width)
-        
-        self.stdscr.addstr(7, 2, "Frequency: ", get_view_color("screenshot"))
-        self.stdscr.addstr(freq_bar, get_view_color("screenshot") | curses.A_BOLD)
-        self.stdscr.addstr(f" {self.current_frequency:.1f}s", get_view_color("screenshot"))
-        
-        # Controls
-        self.draw_controls("⌨️  Space:Pause  ◀️ ▶️ :Adjust  ⚡️S:Set  📂O:Open", 9)
-        
-        # Output
-        start_y = 11
-        output_lines = self.process_manager.get_output("screenshot")
-        if output_lines:
-            for i, line in enumerate(output_lines[-self.height+start_y:]):
-                try:
-                    self.stdscr.addstr(start_y + i, 2, line)
-                except curses.error:
+            # Display current frequency and status
+            self.is_paused = not self.process_manager.screenshot_manager.is_running()
+            status_text = "Paused" if self.is_paused else "Running"
+            status_color = curses.color_pair(STATUS_STOPPED if self.is_paused else STATUS_RUNNING)
+            self.win.addstr(3, 4, f"Capture Status: ")
+            self.win.addstr(status_text, status_color | curses.A_BOLD)
+            self.win.addstr(4, 4, f"Frequency: {self.current_frequency:.1f}s (Use ← → to adjust, 's' to set)")
+
+            # Log Output Section
+            self.win.addstr(6, 2, "Screenshot Log", curses.A_BOLD | curses.A_UNDERLINE)
+            log_lines = self.process_manager.get_output("screenshot")
+
+            # Display last few log lines
+            start_line = max(0, len(log_lines) - (max_y - 9))
+            for i, line in enumerate(log_lines[start_line:]):
+                draw_y = 8 + i
+                if draw_y >= max_y - 1:
                     break
+                safe_line = line[:max_x-5]
+                self.win.addstr(draw_y, 4, safe_line)
+
+        except curses.error:
+            pass
 
     def handle_input(self, key):
         """Handle screenshot view specific input"""
-        if super().handle_input(key):  # Handle help overlay
-            return
-            
+        if super().handle_input(key):
+            return True
+
         if key == ord(' '):
             self.toggle_screenshot_pause()
         elif key == ord('o'):
             self.open_screenshots_folder()
         elif key == curses.KEY_LEFT:
-            self.current_frequency = max(0.5, self.current_frequency - 0.5)
+            self.current_frequency = max(0.1, self.current_frequency - 0.5)
             self.save_screenshot_frequency()
         elif key == curses.KEY_RIGHT:
-            self.current_frequency = min(10.0, self.current_frequency + 0.5)
+            self.current_frequency = min(60.0, self.current_frequency + 0.5)
             self.save_screenshot_frequency()
-        elif key == ord('s'):  # Changed from 'f' to 's'
+        elif key == ord('s'):
             new_freq = self.get_frequency_input()
-            if new_freq:
+            if new_freq is not None:
                 self.current_frequency = new_freq
                 self.save_screenshot_frequency()
+        else:
+            return False
+
+        return True
+
+    def toggle_screenshot_pause(self):
+        """Toggle the screenshot capture pause state."""
+        if self.process_manager.screenshot_manager.is_running():
+            self.process_manager.screenshot_manager.pause_capturing()
+            self.is_paused = True
+            self.process_manager._add_to_buffer("screenshot", "Screenshot capture paused", "info")
+        else:
+            self.process_manager.screenshot_manager.resume_capturing()
+            self.is_paused = False
+            self.process_manager._add_to_buffer("screenshot", "Screenshot capture resumed", "info")
 
     def open_screenshots_folder(self):
-        """Open the screenshots folder in the system file explorer."""
-        # Use main screenshots directory instead of temp
-        screenshots_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "screenshots")
-        if not os.path.exists(screenshots_dir):
-            os.makedirs(screenshots_dir)
+        """Open the folder containing screenshots."""
+        path = get_screenshots_dir()
         try:
-            if os.name == 'nt':  # Windows
-                os.startfile(screenshots_dir)
-            elif os.name == 'posix':  # macOS and Linux
-                subprocess.run(['open' if sys.platform == 'darwin' else 'xdg-open', screenshots_dir])
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            self.process_manager._add_to_buffer("screenshot", f"Opened folder: {path}", "info")
         except Exception as e:
-            print(f"Error opening screenshots folder: {e}")
+            logging.error(f"Error opening screenshots folder '{path}': {e}", exc_info=True)
+            self.process_manager._add_to_buffer("status", f"Error opening folder: {e}", "error")
 
     def load_screenshot_frequency(self):
         """Load the screenshot frequency from config file."""
@@ -90,109 +104,99 @@ class ScreenshotView(BaseView):
             config_file = get_frequency_config_file()
             if os.path.exists(config_file):
                 with open(config_file, 'r') as f:
-                    config = json.load(f)
-                    self.current_frequency = float(config.get('frequency', 4.0))
-        except Exception:
+                    config_data = json.load(f)
+                    freq_value = config_data.get('frequency')
+                    if freq_value is not None:
+                        try:
+                            freq_value = float(freq_value)
+                            if 0.1 <= freq_value <= 60.0:
+                                self.current_frequency = freq_value
+                            else:
+                                logging.warning(f"Loaded frequency {freq_value} out of range, using default.")
+                                self.current_frequency = 4.0
+                        except (TypeError, ValueError):
+                            logging.warning(f"Invalid frequency '{freq_value}' in config, using default.")
+                            self.current_frequency = 4.0
+                    else:
+                        self.current_frequency = 4.0
+            else:
+                self.current_frequency = 4.0
+
+        except Exception as e:
+            logging.error(f"Error loading frequency config: {e}", exc_info=True)
             self.current_frequency = 4.0
 
     def save_screenshot_frequency(self):
         """Save the current screenshot frequency to config."""
         try:
             config_file = get_frequency_config_file()
+            os.makedirs(os.path.dirname(config_file), exist_ok=True)
             with open(config_file, "w") as f:
                 json.dump({'frequency': self.current_frequency}, f)
-                
-            # Create reload signal file
-            with open(os.path.join(get_temp_dir(), "reload_frequency"), "w") as f:
-                pass
-                
+
+            self.process_manager.screenshot_manager.set_frequency(self.current_frequency)
+            self.process_manager._add_to_buffer("screenshot", f"Frequency set to {self.current_frequency:.1f}s", "info")
+
         except Exception as e:
-            print(f"Error saving frequency: {e}")
+            logging.error(f"Error saving frequency: {e}", exc_info=True)
+            self.process_manager._add_to_buffer("status", f"Error saving frequency: {e}", "error")
 
     def get_frequency_input(self):
         """Get screenshot frequency input from user."""
         height, width = self.height, self.width
-        input_win = curses.newwin(3, 40, height//2-1, (width-40)//2)
+        win_h = 3
+        win_w = 40
+        win_y = max(0, (height - win_h) // 2)
+        win_x = max(0, (width - win_w) // 2)
+
+        if win_y + win_h > height or win_x + win_w > width:
+            self.process_manager._add_to_buffer("status", "Terminal too small to set frequency", "warning")
+            return None
+
+        input_win = curses.newwin(win_h, win_w, win_y, win_x)
         input_win.box()
-        input_win.addstr(0, 2, " Enter Frequency (0.5-10s) ", curses.A_BOLD)
+        input_win.addstr(0, 2, " Enter Frequency (0.1-60s) ", curses.A_BOLD)
         input_win.addstr(1, 2, "> ")
         input_win.keypad(1)
+        curses.curs_set(1)
         curses.echo()
-        
+
         freq_str = ""
-        while True:
-            try:
-                ch = input_win.getch()
-                if ch == 10:  # Enter
-                    break
-                elif ch == 27:  # Escape
-                    freq_str = ""
-                    break
-                elif ch in (8, 127):  # Backspace/Delete
-                    if freq_str:
-                        freq_str = freq_str[:-1]
-                        input_win.addstr(1, 2, "> " + freq_str + " ")
-                        input_win.refresh()
-                elif ch >= 32:  # Printable characters
-                    if len(freq_str) < 4:
-                        freq_str += chr(ch)
-                        input_win.addstr(1, 2, "> " + freq_str)
-                        input_win.refresh()
-            except curses.error:
-                pass
-                
-        curses.noecho()
-        
-        # Cleanup window
-        input_win.clear()
-        input_win.refresh()
-        del input_win
-        self.stdscr.touchwin()
-        self.stdscr.refresh()
-        
+        try:
+            input_win.move(1, 4)
+            freq_str = input_win.getstr(4).decode('utf-8')
+
+        except curses.error as e:
+            logging.error(f"Error getting frequency input: {e}")
+            freq_str = ""
+        except KeyboardInterrupt:
+            freq_str = ""
+
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+            del input_win
+            self.stdscr.touchwin()
+            self.stdscr.refresh()
+
         if freq_str:
             try:
                 freq = float(freq_str)
-                if 0.5 <= freq <= 10.0:
+                if 0.1 <= freq <= 60.0:
                     return freq
+                else:
+                    self.process_manager._add_to_buffer("status", f"Frequency {freq} out of range (0.1-60.0)", "warning")
             except ValueError:
-                pass
+                self.process_manager._add_to_buffer("status", f"Invalid frequency input: '{freq_str}'", "warning")
         return None
 
-    def toggle_screenshot_pause(self):
-        """Toggle screenshot capture pause state."""
-        tmp_dir = get_temp_dir()
-        pause_file = os.path.join(tmp_dir, "signal_pause_capture")
-        resume_file = os.path.join(tmp_dir, "signal_resume_capture")
-        
-        if os.path.exists(pause_file):
-            os.rmdir(pause_file)
-            os.makedirs(resume_file)
-        else:
-            if os.path.exists(resume_file):
-                os.rmdir(resume_file)
-            os.makedirs(pause_file)
-
     def get_help_content(self):
-        """Get help content for screenshot view."""
+        """Return help content specific to the Screenshot view."""
         return [
-            "This view manages the screenshot capture service.",
-            "Screenshots are taken at regular intervals and",
-            "automatically cleaned up when older than 3 minutes.",
-            "",
-            "Controls:",
-            "Space: Pause/Resume screenshot capture",
-            "←→: Adjust frequency by 0.5s",
-            "S: Set exact frequency (0.5-10s)",  # Changed from F to S
-            "O: Open screenshots folder",
-            "",
-            "Status Icons:",
-            "▶️  Capture running",
-            "⏸️  Capture paused",
-            "📸 Screenshot taken",
-            "🗑️  Old screenshots cleaned",
-            "",
-            "Frequency Bar:",
-            "▍ Current frequency setting",
-            "░ Available frequency range"
+            ("SPACE", "Pause/Resume Screenshot Capture"),
+            ("← / →", "Adjust Frequency (-/+ 0.5s)"),
+            ("s", "Set Frequency (0.1-60s)"),
+            ("o", "Open Screenshots Folder"),
+            ("h", "Toggle Help"),
+            ("q", "Quit Application"),
         ]
