@@ -17,7 +17,7 @@ import logging
 import threading
 from datetime import datetime
 
-from utils import get_config_dir, get_temp_dir, get_logs_dir
+from utils import get_config_dir, get_temp_dir, get_logs_dir, get_frequency_config_file
 from .ocr_processor import OCRProcessor
 from .message_system import MessageManager, MessageLevel, MessageCategory
 
@@ -39,16 +39,16 @@ class ScreenshotManager:
     - Implement proper error handling for disk full scenarios
     """
     
-    def __init__(self):
+    def __init__(self, message_manager: MessageManager):
         self.ocr_processor = OCRProcessor()
-        self.capturing = False
-        self.capture_thread = None
         self.logger = self._setup_logging()
         self.screenshot_interval = 4.0
         
-        # Initialize both legacy and new message systems
+        # Store the passed message manager instance
+        self.message_manager = message_manager
+        
+        # Initialize legacy buffer
         self.output_buffer = []
-        self.message_manager = MessageManager()
         
         self.load_screenshot_config()
         
@@ -76,23 +76,33 @@ class ScreenshotManager:
     def load_screenshot_config(self):
         """Load screenshot frequency from config."""
         try:
-            config_file = os.path.join(get_config_dir(), "screenshot_frequency.json")
+            config_file = get_frequency_config_file()
             if os.path.exists(config_file):
                 with open(config_file) as f:
-                    self.screenshot_interval = float(json.load(f).get('frequency', 4.0))
-                    self._add_to_buffer(f"Screenshot frequency set to {self.screenshot_interval}s")
+                    loaded_interval = float(json.load(f).get('frequency', 4.0))
+                    if 0.1 <= loaded_interval <= 60.0:
+                        if self.screenshot_interval != loaded_interval:
+                            self.screenshot_interval = loaded_interval
+                            self._add_to_buffer(f"Screenshot frequency updated to {self.screenshot_interval:.1f}s", "info")
+                            self.logger.info(f"Screenshot frequency updated to {self.screenshot_interval:.1f}s")
+                        else:
+                            self.logger.debug(f"Screenshot frequency already {self.screenshot_interval:.1f}s, no change.")
+                    else:
+                        self.logger.warning(f"Loaded frequency {loaded_interval} out of range (0.1-60.0), keeping current value {self.screenshot_interval:.1f}s.")
+            else:
+                self.logger.info(f"Frequency config file not found at {config_file}, using current value {self.screenshot_interval:.1f}s.")
+        except (ValueError, TypeError, json.JSONDecodeError) as e:
+            self.logger.error(f"Error loading or parsing screenshot config: {e}. Using current value {self.screenshot_interval:.1f}s.")
         except Exception as e:
-            self.logger.error(f"Error loading screenshot config: {e}")
+            self.logger.error(f"Unexpected error loading screenshot config: {e}. Using current value {self.screenshot_interval:.1f}s.", exc_info=True)
 
     def _add_to_buffer(self, message, level="info"):
         """Add a message to the output buffer with timestamp."""
-        # Add to new message system
         try:
-            msg_level = MessageLevel(level)
+            msg_level = getattr(MessageLevel, level.upper(), MessageLevel.INFO)
         except ValueError:
             msg_level = MessageLevel.INFO
             
-        # Determine category based on message content
         if "screenshot" in message.lower():
             category = MessageCategory.SCREENSHOT
         elif "deleted" in message.lower() or "cleaned" in message.lower():
@@ -108,95 +118,22 @@ class ScreenshotManager:
             buffer_name="screenshot"
         )
         
-        # Legacy format for backward compatibility
         timestamp = time.strftime("%H:%M:%S")
         emoji = "📸" if "screenshot" in message.lower() else "🗑️" if "deleted" in message.lower() else "ℹ️"
         self.output_buffer.append(f"{timestamp} {emoji} {message} ({level})")
         
-        # Keep buffer size manageable
         if len(self.output_buffer) > 1000:
             self.output_buffer.pop(0)
 
-    def _capture_loop(self):
-        """Main screenshot capture loop."""
-        self.logger.info("Starting screenshot capture loop")
-        self._add_to_buffer("Screenshot capture started")
-        
-        self._running = True
-        self._paused = False
-
-        while self.capturing:
-            try:
-                # Check for pause signal
-                pause_file = os.path.join(get_temp_dir(), "signal_pause_capture")
-                if os.path.exists(pause_file):
-                    self._paused = True
-                    time.sleep(1)  # Sleep briefly while paused
-                    continue
-                else:
-                    self._paused = False
-                
-                # Capture screenshot
-                filepath = self.ocr_processor.capture_screenshot()
-                if filepath:
-                    filename = os.path.basename(filepath)
-                    self._add_to_buffer(f"Captured: {filename}")
-                
-                # Clean up old screenshots
-                deleted = self.ocr_processor.cleanup_old_screenshots()
-                if deleted:
-                    self._add_to_buffer(f"Cleaned up {deleted} old screenshots", "info")
-                
-                # Check for frequency changes
-                reload_file = os.path.join(get_temp_dir(), "reload_frequency")
-                if os.path.exists(reload_file):
-                    self.load_screenshot_config()
-                    try:
-                        os.remove(reload_file)
-                    except:
-                        pass
-                
-                # Wait for next capture
-                time.sleep(self.screenshot_interval)
-                
-            except Exception as e:
-                self.logger.error(f"Error in capture loop: {e}")
-                self._add_to_buffer(f"Error: {str(e)}", "warning")
-                time.sleep(1)  # Brief sleep on error before retry
-
-        self._running = False
-
-    def start_capturing(self):
-        """Start the screenshot capture process."""
-        if self.capturing:
-            return
-            
-        self.capturing = True
-        self.capture_thread = threading.Thread(target=self._capture_loop)
-        self.capture_thread.daemon = True  # Thread will exit when main process exits
-        self.capture_thread.start()
-        self._add_to_buffer("Screenshot service started")
-        self.logger.info("Screenshot capture started")
-
-    def stop_capturing(self):
-        """Stop the screenshot capture process."""
-        self.capturing = False
-        if self.capture_thread:
-            self.capture_thread.join()
-            self.capture_thread = None
-        self._add_to_buffer("Screenshot service stopped")
-        self.logger.info("Screenshot capture stopped")
-
-    def process_latest_screenshot(self):
+    def process_latest_screenshot(self, manual_trigger: bool = False):
         """Process the most recent screenshot."""
+        self.logger.info(f"Processing latest screenshot (Manual Trigger: {manual_trigger})")
         result = self.ocr_processor.process_latest_screenshot()
         if result:
             self._add_to_buffer("OCR processing successful", "info")
+        else:
+            self._add_to_buffer("OCR processing returned no text or failed.", "warning")
         return result
-
-    def is_capturing(self):
-        """Check if screenshot capture is active."""
-        return self.capturing and (self.capture_thread is not None and self.capture_thread.is_alive())
 
     def is_running(self):
         """Check if the capture loop is running and not paused."""
@@ -204,13 +141,9 @@ class ScreenshotManager:
 
     def get_output(self):
         """Get the current output buffer."""
-        # Try to get messages from the new system first
         messages = self.message_manager.get_formatted_messages("screenshot")
-        
-        # Fall back to legacy buffer if new system has no messages
         if not messages:
             return self.output_buffer.copy()
-            
         return messages
 
     def get_status(self):
@@ -220,11 +153,73 @@ class ScreenshotManager:
         elif self._paused:
             return "Paused"
         else:
-            # Check if the thread is alive as an extra measure
-            if self.capture_thread and self.capture_thread.is_alive():
-                return "Running"
-            else:
-                # If _running is True but thread is dead, something went wrong
-                self.logger.error("ScreenshotManager state inconsistency: _running is True but thread is not alive.")
-                self._running = False  # Correct the state
-                return "Error (Thread Died)"
+            return "Running"
+
+    def run(self, stop_event: threading.Event):
+        """Main screenshot capture loop, intended to be run in a thread."""
+        self.logger.info("ScreenshotManager run method started.")
+        self._add_to_buffer("Screenshot capture service starting...", "info")
+
+        self._running = True
+        self._paused = False
+
+        pause_file = os.path.join(get_temp_dir(), "signal_pause_capture")
+        reload_file = os.path.join(get_temp_dir(), "reload_frequency")
+
+        while not stop_event.is_set():
+            try:
+                if os.path.exists(pause_file):
+                    if not self._paused:
+                        self._paused = True
+                        self._add_to_buffer("Screenshot capture paused.", "info")
+                        self.logger.info("Screenshot capture paused.")
+                    time.sleep(1)
+                    continue
+                else:
+                    if self._paused:
+                        self._paused = False
+                        self._add_to_buffer("Screenshot capture resumed.", "info")
+                        self.logger.info("Screenshot capture resumed.")
+
+                filepath = self.ocr_processor.capture_screenshot()
+                if filepath:
+                    filename = os.path.basename(filepath)
+                    self._add_to_buffer(f"Captured: {filename}", "info")
+
+                deleted = self.ocr_processor.cleanup_old_screenshots()
+                if deleted:
+                    self._add_to_buffer(f"Cleaned up {deleted} old screenshots", "info")
+
+                if os.path.exists(reload_file):
+                    self.logger.info("Reload frequency signal detected.")
+                    self.load_screenshot_config()
+                    try:
+                        os.remove(reload_file)
+                        self.logger.info("Reload frequency signal file removed.")
+                    except OSError as e:
+                        self.logger.warning(f"Could not remove reload signal file: {e}")
+                    except Exception as e:
+                        self.logger.error(f"Unexpected error removing reload signal file: {e}", exc_info=True)
+
+                wait_until = time.time() + self.screenshot_interval
+                while time.time() < wait_until and not stop_event.is_set():
+                    if os.path.exists(pause_file):
+                        if not self._paused:
+                            self._paused = True
+                            self._add_to_buffer("Screenshot capture paused.", "info")
+                            self.logger.info("Screenshot capture paused during wait.")
+                        break
+                    time.sleep(0.1)
+
+            except Exception as e:
+                self.logger.error(f"Error in screenshot manager run loop: {e}", exc_info=True)
+                self._add_to_buffer(f"ERROR in capture loop: {str(e)}", "error")
+                if not stop_event.wait(1.0):
+                    continue
+                else:
+                    break
+
+        self._running = False
+        self._paused = False
+        self._add_to_buffer("Screenshot capture service stopped.", "info")
+        self.logger.info("ScreenshotManager run method finished.")
