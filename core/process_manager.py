@@ -18,7 +18,7 @@ from pathlib import Path
 
 try:
     from utils.path_config import get_logs_dir, get_screenshots_dir, get_temp_dir, get_project_root
-    from utils.server_config import get_server_config as load_server_config_util, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
+    from utils.server_config import get_server_config, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
     from utils.config_loader import config as config_manager
     from core.screenshot_manager import ScreenshotManager
     from core.message_system import MessageManager, MessageLevel, MessageCategory
@@ -37,7 +37,7 @@ class ProcessManager:
 
     def __init__(self):
         self.logger = logging.getLogger('33ter-ProcessManager')
-        self.config = load_server_config_util()
+        self.config = get_server_config()
         self.message_manager = MessageManager()  # Initialize MessageManager first
 
         self.socketio_process: Optional[subprocess.Popen] = None
@@ -340,7 +340,7 @@ class ProcessManager:
         try:
             # Add a small delay before attempting connection
             time.sleep(0.75)  # Increased delay slightly
-            server_cfg = load_server_config_util().get('server', {})
+            server_cfg = get_server_config().get('server', {})
             host = server_cfg.get('host', '0.0.0.0')
             connect_host = '127.0.0.1' if host == '0.0.0.0' else host
             port = server_cfg.get('port', 5348)
