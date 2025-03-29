@@ -44,35 +44,29 @@ except ImportError as e:
 # Get a logger instance for this module specifically
 module_logger = logging.getLogger(__name__)
 
-def setup_logging() -> None:
-    """Configure application logging."""
-    log_level_str = config.get("logging", "level", default="INFO").upper()
-    log_level = getattr(logging, log_level_str, logging.INFO)
-    log_file = os.path.join(get_logs_dir(), "app.log")
+def setup_logging():
+    logging.root.handlers = []
+    logging.basicConfig(level=logging.INFO)
 
-    # Ensure log directory exists
-    try:
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    except OSError as e:
-        print(f"Warning: Could not create log directory {os.path.dirname(log_file)}: {e}", file=sys.stderr)
-
-    # Remove existing handlers to avoid duplicates
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-
-    handlers = [logging.StreamHandler()]
-    try:
-        handlers.append(logging.FileHandler(log_file))
-    except Exception as e:
-        print(f"Warning: Failed to create FileHandler for {log_file}: {e}. File logging disabled.", file=sys.stderr)
-
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=handlers
+    # Configure root logger
+    root_logger = logging.getLogger()
+    
+    # Create a file handler for the root logger
+    root_file_handler = logging.FileHandler("root.log")
+    root_file_handler.setLevel(logging.INFO)
+    root_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    logging.getLogger('socketio').setLevel(logging.WARNING)
-    logging.getLogger('engineio').setLevel(logging.WARNING)
+    root_file_handler.setFormatter(root_formatter)
+    
+    # Remove all handlers and add only the file handler
+    root_logger.handlers = []
+    root_logger.addHandler(root_file_handler)
+    
+    # Set level for other modules
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    logging.getLogger("engineio").setLevel(logging.ERROR)
+    logging.getLogger("socketio").setLevel(logging.ERROR)
 
 def setup_environment() -> Optional[ProcessManager]:
     """Initialize application environment and process manager."""
