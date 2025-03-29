@@ -425,3 +425,26 @@ if __name__ == '__main__':
             logger.error(f"Error during final cleanup: {e}")
 
         logger.info("Server shutdown complete.")
+
+@sio.event
+async def message(sid, data):
+    """Handle generic messages sent with the default 'message' event.
+    Only acts on recognized messageTypes (e.g., trigger_ocr).
+    Other message types are logged and ignored to prevent loops.
+    """
+    logger.debug(f"Received generic 'message' event from {sid}. Data: {data}")
+    msg_type = data.get('messageType')
+
+    # Handle trigger_ocr message type within the generic message handler
+    if msg_type and msg_type.lower() == "trigger_ocr":
+        logger.info(f"Received 'trigger_ocr' messageType via generic message event from {sid}")
+        # Ensure handle_ocr_trigger exists and is called correctly
+        # Assuming handle_ocr_trigger is defined elsewhere in the file
+        if 'handle_ocr_trigger' in globals() and callable(globals()['handle_ocr_trigger']):
+             await handle_ocr_trigger(sid)
+        else:
+             logger.error(f"handle_ocr_trigger function not found or not callable when processing trigger_ocr message from {sid}")
+        return # Stop processing here for trigger_ocr
+
+    # If messageType is not recognized, log and ignore it.
+    logger.warning(f"Received unhandled generic message type '{msg_type}' from {sid}. Ignoring. Data: {data}")
