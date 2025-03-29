@@ -79,6 +79,15 @@ async def emit_client_count_update():
     await sio.emit(EventType.UPDATED_CLIENT_COUNT.value, count_payload, room=current_room)
 
 # --- EVENTS ---
+@sio.on('*')
+async def any_event(event, sid, data):
+    """Catch-all handler to log any event received by the server."""
+    # Avoid logging excessively for built-in connect/disconnect
+    if event not in ['connect', 'disconnect']:
+        logger.info(f"SERVER_ANY_EVENT: Received event '{event}' from SID {sid}. Data: {data}")
+        sys.stdout.flush() # Explicitly flush stdout
+
+
 @sio.event
 async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
     """Handle new client connections."""
@@ -100,9 +109,13 @@ async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
         "client_type": client_type
     }
 
-    # Send private welcome message
-    await sio.send(create_welcome_message(sid), room=sid)
-    logger.info(f"Client connected: {sid} ({client_ip}) - Type: {client_type}")
+    # --- Log before sending welcome message TO ROOM ---
+    welcome_msg = create_welcome_message(sid)
+    logger.info(f"SERVER_EMIT_DEBUG: Attempting to emit welcome message to room {current_room}: {welcome_msg}")
+    # Emit as a 'message' event to the room instead of sending privately
+    await sio.emit('message', welcome_msg, room=current_room)
+    logger.info(f"SERVER_EMIT_DEBUG: Welcome message emitted to room {current_room}.")
+    # --- End log ---
 
     # Emit connection event to the room
     connect_event_payload = {
@@ -117,8 +130,16 @@ async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
     if current_room:
         await sio.enter_room(sid, current_room)
         logger.info(f"Client {sid} automatically joined room: {current_room}")
-        # Send private confirmation message
-        await sio.send(create_join_leave_message(sid, current_room, joined=True), room=sid)
+
+        # Send join confirmation message TO ROOM
+        join_confirm_msg = create_join_leave_message(sid, current_room, joined=True)
+        # --- Log before emitting join confirmation TO ROOM ---
+        logger.info(f"SERVER_EMIT_DEBUG: Attempting to emit join confirmation to room {current_room}: {join_confirm_msg}")
+        # Emit as a 'message' event to the room instead of sending privately
+        await sio.emit('message', join_confirm_msg, room=current_room)
+        logger.info(f"SERVER_EMIT_DEBUG: Join confirmation emitted to room {current_room}.")
+        # --- End log ---
+
         # Emit joined room event
         join_event_payload = {"sid": sid, "room": current_room}
         await sio.emit(EventType.CLIENT_JOINED_ROOM.value, join_event_payload, room=current_room)
@@ -171,8 +192,14 @@ async def join_room(sid, data):
     await sio.enter_room(sid, room_name)
     logger.info(f"Client {sid} joined room: {room_name}")
 
-    # Send private confirmation message
-    await sio.send(create_join_leave_message(sid, room_name, joined=True), room=sid)
+    # Emit join confirmation message TO ROOM
+    join_confirm_msg = create_join_leave_message(sid, room_name, joined=True)
+    # --- Log before emitting join confirmation TO ROOM ---
+    logger.info(f"SERVER_EMIT_DEBUG: Attempting to emit join confirmation to room {current_room}: {join_confirm_msg}")
+    # Emit as a 'message' event to the room instead of sending privately
+    await sio.emit('message', join_confirm_msg, room=current_room)
+    logger.info(f"SERVER_EMIT_DEBUG: Join confirmation emitted to room {current_room}.")
+    # --- End log ---
 
     # Emit joined room event
     join_event_payload = {"sid": sid, "room": room_name}
@@ -195,8 +222,15 @@ async def leave_room(sid, data):
     if room_name in sio.rooms(sid):
         await sio.leave_room(sid, room_name)
         logger.info(f"Client {sid} left room: {room_name}")
-        # Send private confirmation message
-        await sio.send(create_join_leave_message(sid, room_name, joined=False), room=sid)
+        
+        # Emit leave confirmation message TO ROOM
+        leave_confirm_msg = create_join_leave_message(sid, room_name, joined=False)
+        # --- Log before emitting leave confirmation TO ROOM ---
+        logger.info(f"SERVER_EMIT_DEBUG: Attempting to emit leave confirmation to room {current_room}: {leave_confirm_msg}")
+        # Emit as a 'message' event to the room instead of sending privately
+        await sio.emit('message', leave_confirm_msg, room=current_room)
+        logger.info(f"SERVER_EMIT_DEBUG: Leave confirmation emitted to room {current_room}.")
+        # --- End log ---
 
         # Emit left room event
         leave_event_payload = {"sid": sid, "room": room_name}
@@ -206,9 +240,57 @@ async def leave_room(sid, data):
         await emit_client_count_update()
     else:
         logger.warning(f"Client {sid} tried to leave room '{room_name}' but was not in it.")
-        # Send private warning message
-        warning_message = create_socket_message(MessageType.WARNING, f"You are not in room: {room_name}", sender="localBackend", target_sid=sid)
-        await sio.emit('message', warning_message, room=sid)
+        
+        # Emit warning message TO ROOM
+        warning_message = create_socket_message(MessageType.WARNING, f"Client {sid} tried to leave room '{room_name}' but was not in it.", sender="localBackend")
+        # --- Log before emitting leave warning TO ROOM ---
+        logger.info(f"SERVER_EMIT_DEBUG: Attempting to emit leave warning to room {current_room}: {warning_message}")
+        # Emit as a 'message' event to the room instead of sending privately
+        await sio.emit('message', warning_message, room=current_room)
+        logger.info(f"SERVER_EMIT_DEBUG: Leave warning emitted to room {current_room}.")
+        # --- End log ---
+
+# Explicitly handle the event named 'message'
+@sio.on('message')
+async def handle_default_message(sid, data):
+    """Handle generic messages sent with the default 'message' event.
+    Acts on trigger_ocr, otherwise rebroadcasts to the room.
+    Uses logger for output.
+    """
+    # Use INFO level for initial reception log
+    logger.info(f"Received generic 'message' event from {sid}. Data: {data}")
+    sys.stdout.flush() # Explicitly flush stdout
+    msg_type = data.get('messageType')
+
+    # Handle trigger_ocr message type within the generic message handler
+    if msg_type and msg_type.lower() == "trigger_ocr":
+        logger.info(f"Received 'trigger_ocr' messageType via generic message event from {sid}")
+        sys.stdout.flush() # Explicitly flush stdout
+        # Ensure handle_ocr_trigger exists and is called correctly
+        if 'handle_ocr_trigger' in globals() and callable(globals()['handle_ocr_trigger']):
+             await handle_ocr_trigger(sid)
+        else:
+             # Use ERROR level for errors
+             logger.error(f"handle_ocr_trigger function not found or not callable when processing trigger_ocr message from {sid}")
+             sys.stderr.flush() # Explicitly flush stderr
+        return # Stop processing here for trigger_ocr
+
+    # --- ADD REBROADCAST LOGIC --- 
+    # For any other message type received via the default 'message' event,
+    # rebroadcast it to the room, skipping the original sender.
+    logger.info(f"Rebroadcasting generic message from {sid} (Type: '{msg_type}') to room {current_room}.")
+    sys.stdout.flush()
+    try:
+        # --- Log before rebroadcasting message ---
+        logger.info(f"SERVER_EMIT_DEBUG: Attempting to rebroadcast message to room {current_room} (skip {sid}): {data}")
+        await sio.emit('message', data, room=current_room, skip_sid=sid)
+        logger.info(f"SERVER_EMIT_DEBUG: Message rebroadcast complete to room {current_room}.")
+        sys.stdout.flush()
+        # --- End log ---
+    except Exception as e:
+        logger.error(f"Error rebroadcasting message from {sid}: {e}", exc_info=True)
+        sys.stderr.flush()
+    # --- END REBROADCAST LOGIC ---
 
 @sio.event
 async def register_internal_client(sid: str, data: Optional[Dict] = None):
@@ -260,14 +342,18 @@ async def on_trigger_ocr_message(sid, data):
         return True
     else:
         logger.warning(f"Cannot process OCR trigger from {requester_sid}: Internal client not registered or connected.")
-        # Send private error message back to the requester
+        # Send error message TO ROOM
         error_message = create_socket_message(
             MessageType.ERROR,
-            "Cannot process request: Internal processing client not available.",
-            sender="localBackend",
-            target_sid=requester_sid
+            f"Cannot process OCR trigger from {requester_sid}: Internal processing client not available.", # Include requester SID in message
+            sender="localBackend"
+            # Removed target_sid
         )
-        await sio.emit('message', error_message, room=requester_sid)
+        # --- Log before emitting error message TO ROOM ---
+        logger.info(f"SERVER_EMIT_DEBUG: Attempting to emit error message to room {current_room}: {error_message}")
+        await sio.emit('message', error_message, room=current_room)
+        logger.info(f"SERVER_EMIT_DEBUG: Error message emitted to room {current_room}.")
+        # --- End log ---
         return False
 
 
@@ -297,20 +383,6 @@ async def on_internal_ocr_result(sid, data):
     processed_payload = {"success": True, "text_preview": preview}
     await sio.emit(EventType.PROCESSED_SCREENSHOT.value, processed_payload, room=current_room)
 
-    # Send the full result message ONLY to the original requester
-    if original_requester_sid in connected_clients:
-        logger.info(f"Sending final OCR result to original requester: {original_requester_sid}")
-        result_message_value = create_ocr_result_message(ocr_text, source="triggered") # Create value part
-        final_message = create_socket_message(
-            MessageType.OCR_RESULT, # Use OCR_RESULT type for iOS client
-            result_message_value,
-            sender="localBackend",
-            target_sid=original_requester_sid
-        )
-        await sio.emit('message', final_message, room=original_requester_sid)
-    else:
-        logger.warning(f"Original requester {original_requester_sid} disconnected before OCR result could be sent.")
-    
     # Send a formatted ocr_result message to the chat room
     room_ocr_result = {
         "messageType": "ocr_result",
@@ -318,7 +390,11 @@ async def on_internal_ocr_result(sid, data):
         "from": "localBackend"
     }
     logger.info(f"Broadcasting OCR result to room {current_room}")
+    # --- Log before emitting OCR result to room ---
+    logger.info(f"SERVER_EMIT_DEBUG: Attempting to emit OCR result message to room {current_room}: {room_ocr_result}")
     await sio.emit('message', room_ocr_result, room=current_room)
+    logger.info(f"SERVER_EMIT_DEBUG: OCR result message emitted to room {current_room}.")
+    # --- End log ---
 
 # --- Health Check / Periodic Tasks ---
 async def periodic_tasks():
@@ -425,26 +501,3 @@ if __name__ == '__main__':
             logger.error(f"Error during final cleanup: {e}")
 
         logger.info("Server shutdown complete.")
-
-@sio.event
-async def message(sid, data):
-    """Handle generic messages sent with the default 'message' event.
-    Only acts on recognized messageTypes (e.g., trigger_ocr).
-    Other message types are logged and ignored to prevent loops.
-    """
-    logger.debug(f"Received generic 'message' event from {sid}. Data: {data}")
-    msg_type = data.get('messageType')
-
-    # Handle trigger_ocr message type within the generic message handler
-    if msg_type and msg_type.lower() == "trigger_ocr":
-        logger.info(f"Received 'trigger_ocr' messageType via generic message event from {sid}")
-        # Ensure handle_ocr_trigger exists and is called correctly
-        # Assuming handle_ocr_trigger is defined elsewhere in the file
-        if 'handle_ocr_trigger' in globals() and callable(globals()['handle_ocr_trigger']):
-             await handle_ocr_trigger(sid)
-        else:
-             logger.error(f"handle_ocr_trigger function not found or not callable when processing trigger_ocr message from {sid}")
-        return # Stop processing here for trigger_ocr
-
-    # If messageType is not recognized, log and ignore it.
-    logger.warning(f"Received unhandled generic message type '{msg_type}' from {sid}. Ignoring. Data: {data}")

@@ -7,7 +7,6 @@ import logging
 import subprocess
 import threading
 import traceback
-import select
 from collections import deque
 from typing import Dict, Optional, List, Union, IO, Tuple, Any
 from datetime import datetime
@@ -182,10 +181,54 @@ class ProcessManager:
             self.logger.error("Socket.IO process or pipes not available for monitoring.")
             return
 
-        self.logger.info("Socket.IO monitor thread started.")
+        self.logger.info("Socket.IO monitor thread started (Using simplified read loop for debug).")
 
+        # --- Simplified STDOUT Reading Loop (for debugging) ---
+        def read_stdout():
+            if not self.socketio_process or not self.socketio_process.stdout:
+                return
+            try:
+                for line in iter(self.socketio_process.stdout.readline, ''): # Blocking read line by line
+                    line = line.strip()
+                    if line:
+                        self.logger.info(f"MONITOR_SIMPLE_READ [STDOUT]: {line}") # Use INFO for visibility
+                        self._add_to_buffer("debug", f"SERVER_STDOUT: {line}", "info")
+                    if self.socketio_stop_event.is_set():
+                        break
+            except Exception as e:
+                 self.logger.error(f"Error in simplified stdout read loop: {e}", exc_info=True)
+            finally:
+                 self.logger.info("Simplified stdout read loop finished.")
+
+        stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+        stdout_thread.start()
+        # --- End Simplified STDOUT Reading Loop ---
+
+        # --- Keep monitoring STDERR (using select or simplified) ---
+        # For now, let's keep stderr monitoring simple too
+        def read_stderr():
+            if not self.socketio_process or not self.socketio_process.stderr:
+                return
+            try:
+                for line in iter(self.socketio_process.stderr.readline, ''): # Blocking read line by line
+                    line = line.strip()
+                    if line:
+                        self.logger.error(f"MONITOR_SIMPLE_READ [STDERR]: {line}") # Use ERROR for visibility
+                        self._add_to_buffer("debug", f"SERVER_STDERR: {line}", "error")
+                    if self.socketio_stop_event.is_set():
+                        break
+            except Exception as e:
+                 self.logger.error(f"Error in simplified stderr read loop: {e}", exc_info=True)
+            finally:
+                 self.logger.info("Simplified stderr read loop finished.")
+
+        stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+        stderr_thread.start()
+        # --- End Simplified STDERR Reading Loop ---
+
+        # Keep the main monitor thread alive to check for process termination and wait for stop event
         while not self.socketio_stop_event.is_set():
-            if self.socketio_process.poll() is not None:
+            if self.socketio_process and self.socketio_process.poll() is not None:
                 self.logger.warning(f"Socket.IO server process terminated unexpectedly with code {self.socketio_process.poll()}.")
                 self._add_to_buffer("status", f"WARNING: Socket.IO server stopped unexpectedly (Code: {self.socketio_process.poll()}).", "warning")
                 self._add_to_buffer("debug", f"SERVER_EXIT: Process terminated with code {self.socketio_process.poll()}", "warning")
@@ -193,34 +236,14 @@ class ProcessManager:
                     self.logger.info("Marking internal client as disconnected due to server process termination.")
                     self.internal_sio_connected.clear()
                 break
+            time.sleep(0.5) # Main loop sleep
 
-            reads = [self.socketio_process.stdout, self.socketio_process.stderr]
-            try:
-                ret = select.select(reads, [], [], 0.5)
+        # Wait for reader threads to finish (they should exit when stop_event is set or process ends)
+        self.logger.info("Waiting for stdout/stderr reader threads to join...")
+        stdout_thread.join(timeout=1.0)
+        stderr_thread.join(timeout=1.0)
+        self.logger.info("Reader threads joined (or timed out).")
 
-                for fd in ret[0]:
-                    line = fd.readline().strip()
-                    if line:
-                        if fd is self.socketio_process.stdout:
-                            self.logger.info(f"SocketIO Server STDOUT: {line}")
-                            self._add_to_buffer("debug", f"SERVER_STDOUT: {line}", "info")
-
-                        elif fd is self.socketio_process.stderr:
-                            self.logger.warning(f"SocketIO Server STDERR: {line}")
-                            self._add_to_buffer("debug", f"SERVER_STDERR: {line}", "error")
-
-            except select.error as e:
-                self.logger.error(f"Select error while monitoring Socket.IO process: {e}")
-                break
-            except Exception as e:
-                self.logger.error(f"Unexpected error in Socket.IO monitor thread: {e}", exc_info=True)
-                try:
-                    self._add_to_buffer("debug", f"MONITOR_ERROR: {e}", "error")
-                except AttributeError as ae:
-                    self.logger.error(f"Error logging monitor error to buffer: {ae}")
-                break
-
-        self.logger.info("Socket.IO monitor thread finished.")
         exit_code = self.socketio_process.poll()
         if exit_code is not None:
             self.logger.info(f"Socket.IO process final exit code: {exit_code}")
