@@ -78,6 +78,7 @@ async def emit_client_count_update():
     logger.info(f"Emitting {EventType.UPDATED_CLIENT_COUNT.value} event with payload: {count_payload}")
     await sio.emit(EventType.UPDATED_CLIENT_COUNT.value, count_payload, room=current_room)
 
+# --- EVENTS ---
 @sio.event
 async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
     """Handle new client connections."""
@@ -238,33 +239,36 @@ async def register_internal_client(sid: str, data: Optional[Dict] = None):
         await sio.emit(EventType.CLIENT_JOINED_ROOM.value, join_event_payload, room=current_room)
         await emit_client_count_update() # Update count if type changed or room joined
 
-
 # Renamed from trigger_ocr to handle the message type
 @sio.on(MessageType.TRIGGER_OCR.value)
 async def on_trigger_ocr_message(sid, data):
     """Handle OCR trigger MESSAGE from iOS client."""
     logger.info(f"Received '{MessageType.TRIGGER_OCR.value}' message from client {sid}. Data: {data}")
-
+    """Common handler for OCR trigger requests from any source."""
+    logger.info(f"Handling OCR trigger for requester {requester_sid}")
+    
     # Emit event indicating processing has started
-    start_event_payload = {"requester_sid": sid}
+    start_event_payload = {"requester_sid": requester_sid}
     await sio.emit(EventType.OCR_PROCESSING_STARTED.value, start_event_payload, room=current_room)
 
     # Check if internal client is connected and ready
     if internal_client_sid and internal_client_sid in connected_clients:
         logger.info(f"Forwarding OCR request to internal client: {internal_client_sid}")
         # Send targeted message to internal client
-        request_payload = {"requester_sid": sid} # Pass original requester SID
+        request_payload = {"requester_sid": requester_sid} # Pass original requester SID
         await sio.emit(MessageType.PERFORM_OCR_REQUEST.value, request_payload, room=internal_client_sid)
+        return True
     else:
-        logger.warning(f"Cannot process OCR trigger from {sid}: Internal client not registered or connected.")
+        logger.warning(f"Cannot process OCR trigger from {requester_sid}: Internal client not registered or connected.")
         # Send private error message back to the requester
         error_message = create_socket_message(
             MessageType.ERROR,
             "Cannot process request: Internal processing client not available.",
             sender="localBackend",
-            target_sid=sid
+            target_sid=requester_sid
         )
-        await sio.emit('message', error_message, room=sid)
+        await sio.emit('message', error_message, room=requester_sid)
+        return False
 
 
 # Handler for results coming FROM the internal client
@@ -277,9 +281,9 @@ async def on_internal_ocr_result(sid, data):
 
     original_requester_sid = data.get('requester_sid')
     ocr_text = data.get('text')
-    logger.info(f"Received OCR result from internal client for requester {original_requester_sid}.")
+    # logger.info(f"Received OCR result from internal client for requester {original_requester_sid}.")
 
-    if not original_requester_sid or ocr_text is None:
+    if ocr_text is None:
         logger.error(f"Invalid OCR result payload from internal client: {data}")
         # Optionally notify the internal client?
         return
@@ -306,68 +310,15 @@ async def on_internal_ocr_result(sid, data):
         await sio.emit('message', final_message, room=original_requester_sid)
     else:
         logger.warning(f"Original requester {original_requester_sid} disconnected before OCR result could be sent.")
-
-
-# Handler for errors coming FROM the internal client
-@sio.on(MessageType.OCR_ERROR.value)
-async def on_internal_ocr_error(sid, data):
-    """Handles OCR_ERROR message FROM the internal client."""
-    if sid != internal_client_sid:
-        logger.warning(f"Received '{MessageType.OCR_ERROR.value}' from non-internal client {sid}. Ignoring.")
-        return
-
-    original_requester_sid = data.get('requester_sid')
-    error_details = data.get('error', 'Unknown OCR error')
-    logger.warning(f"Received OCR error from internal client for requester {original_requester_sid}: {error_details}")
-
-    if not original_requester_sid:
-        logger.error(f"Invalid OCR error payload from internal client: {data}")
-        return
-
-    # Emit completion event (failure)
-    completion_payload = {"requester_sid": original_requester_sid, "success": False, "error": error_details}
-    await sio.emit(EventType.OCR_PROCESSING_COMPLETED.value, completion_payload, room=current_room)
-
-    # Emit processed screenshot event (failure)
-    processed_payload = {"success": False, "error": error_details}
-    await sio.emit(EventType.PROCESSED_SCREENSHOT.value, processed_payload, room=current_room)
-
-    # Send an error message ONLY to the original requester
-    if original_requester_sid in connected_clients:
-        logger.info(f"Sending OCR error notification to original requester: {original_requester_sid}")
-        error_message = create_socket_message(
-            MessageType.ERROR,
-            f"OCR Processing Failed: {error_details}",
-            sender="localBackend",
-            target_sid=original_requester_sid
-        )
-        await sio.emit('message', error_message, room=original_requester_sid)
-    else:
-        logger.warning(f"Original requester {original_requester_sid} disconnected before OCR error could be sent.")
-
-
-@sio.event
-async def heartbeat(sid, data):
-    """Handle heartbeat messages (if kept)."""
-    timestamp = data.get('timestamp')
-    await sio.emit('heartbeat_response', {
-        'status': 'alive',
-        'timestamp': timestamp
-    }, room=sid)
-
-@sio.event
-async def message(sid, data):
-    """Handle generic messages (e.g., INFO, WARNING, ERROR not handled elsewhere)."""
-    # This might receive messages sent from UI or command line
-    # Could potentially rebroadcast certain types if needed, but generally avoid
-    msg_type = data.get('messageType')
-    msg_value = data.get('value')
-    msg_from = data.get('from')
-    logger.debug(f"Received generic message from {sid} (from: {msg_from}): Type={msg_type}, Value='{str(msg_value)[:100]}...'")
-    # Example: Rebroadcast INFO messages from internal client/UI to the room?
-    # if msg_from in ['localUI', 'Internal'] and msg_type == MessageType.INFO.value:
-    #     await sio.emit('message', data, room=current_room, skip_sid=sid)
-    pass
+    
+    # Send a formatted ocr_result message to the chat room
+    room_ocr_result = {
+        "messageType": "ocr_result",
+        "value": ocr_text,
+        "from": "localBackend"
+    }
+    logger.info(f"Broadcasting OCR result to room {current_room}")
+    await sio.emit('message', room_ocr_result, room=current_room)
 
 # --- Health Check / Periodic Tasks ---
 async def periodic_tasks():

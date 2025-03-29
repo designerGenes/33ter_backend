@@ -8,6 +8,9 @@ class EventType(enum.Enum):
     # Server Lifecycle
     SERVER_STARTED = "server_started" # Payload: {}
 
+    POSTED_MESSAGE = "posted_message" # Payload: {"sid": str, "message": str}
+    RECEIVED_MESSAGE = "received_message" # Payload: {"sid": str, "message": str}
+
     # Client Lifecycle / Room Management
     CLIENT_CONNECTED = "client_connected" # Payload: {"sid": str, "address": str, "client_type": str}
     CLIENT_DISCONNECTED = "client_disconnected" # Payload: {"sid": str}

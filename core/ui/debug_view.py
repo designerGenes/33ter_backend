@@ -55,7 +55,7 @@ class DebugView(BaseView):
                 color = curses.color_pair(STATUS_STOPPED) | curses.A_BOLD
             elif "[WARNING]" in line_upper or "(warning)" in line_upper:
                 color = curses.color_pair(MENU_PAIR) | curses.A_BOLD
-            elif "SENDING MESSAGE" in line_upper or "(localui)" in line_upper:
+            elif "SENDING MESSAGE" in line_upper or "(localBackend)" in line_upper:
                 color = curses.color_pair(CONNECTION_ACTIVE)
 
             try:

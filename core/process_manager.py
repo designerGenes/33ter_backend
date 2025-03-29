@@ -486,11 +486,11 @@ class ProcessManager:
                 payload = {
                     'messageType': messageType,
                     'value': value,
-                    'from': 'localUI'
+                    'from': 'localBackend'
                 }
                 self.internal_sio_client.emit('message', payload)
                 self.logger.info(f"Message posted successfully via internal client: {payload}")
-                self._add_to_buffer("debug", f"SENDING MESSAGE (localUI): Type={messageType}, Value='{value[:50]}...'", "info")
+                self._add_to_buffer("debug", f"SENDING MESSAGE (localBackend): Type={messageType}, Value='{value[:50]}...'", "info")
                 return True
             except Exception as e:
                 self.logger.error(f"Failed to post message via internal client: {e}", exc_info=True)
@@ -550,7 +550,7 @@ class ProcessManager:
                 payload = {  # Send dict directly, not list containing dict
                     'text': ocr_text,
                     'timestamp': datetime.now().isoformat(),
-                    'from': 'localUI_manual'
+                    'from': 'localBackend'
                 }
                 self.internal_sio_client.emit('ocr_result', payload)
                 self.logger.info("Manual OCR result sent successfully via internal client.")
