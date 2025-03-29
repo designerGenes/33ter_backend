@@ -480,7 +480,10 @@ if __name__ == '__main__':
     args = parse_args()
     # Setup basic logging if running standalone
     if not logging.getLogger().hasHandlers():
-         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+         # Explicitly set the stream to sys.stdout
+         logging.basicConfig(level=logging.INFO,
+                             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                             stream=sys.stdout)
 
     try:
         asyncio.run(start_server(args.host, args.port))
