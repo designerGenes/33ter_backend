@@ -41,7 +41,8 @@ if str(project_root) not in sys.path:
 
 # Import local modules after path adjustment
 from utils.config_loader import config as config_manager  # Use the ConfigManager instance
-from utils.message_utils import create_socket_message, MessageType
+from utils.message_utils import create_socket_message, create_client_count_message, create_welcome_message, create_joined_room_message, MessageType
+from utils.event_utils import EventType
 from core.ocr_processor import OCRProcessor  # Added import
 
 # --- Globals ---
@@ -67,16 +68,9 @@ health_check_interval = config_manager.get('health_check', 'interval', default=6
 
 async def broadcast_client_count():
     """Broadcast current iOS client count to all clients."""
-    ios_client_count = sum(1 for client in connected_clients.values() if client.get('client_type') == 'iOS')
-    logger.info(f"Broadcasting iOS client count: {ios_client_count}")
-    count_message = create_socket_message(
-        MessageType.CLIENT_COUNT,
-        {"count": ios_client_count},
-        sender="server"
-    )
-    await sio.emit('message', count_message, room=current_room)
-
-# --- Socket.IO Event Handlers ---
+    ios_client_count = len(connected_clients.values())
+    await sio.send(create_client_count_message(ios_client_count), room=current_room)
+    logger.info(f"Broadcasted client count to room: {current_room}")
 
 @sio.event
 async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
@@ -89,29 +83,19 @@ async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
         "connect_time": datetime.now().isoformat(),
         "client_type": client_type
     }
+    await sio.send(create_welcome_message(sid), room=sid)
+    await broadcast_client_count()
     logger.info(f"Client connected: {sid} ({client_ip}) - Type: {client_type}")
     
-    # Send welcome message to the newly connected client
-    welcome_message = create_socket_message(
-        MessageType.INFO,
-        f"Welcome! You are connected with SID: {sid}",
-        sender="server"
-    )
-    await sio.emit('message', welcome_message, room=sid)
-
-    # Automatically join the default room
     if current_room:
         await sio.enter_room(sid, current_room)
         logger.info(f"Client {sid} automatically joined room: {current_room}")
         join_confirm_message = create_socket_message(
             MessageType.INFO,
             f"You have joined room: {current_room}",
-            sender="server"
+            sender="localBackend"
         )
-        await sio.emit('message', join_confirm_message, room=sid)
-        
-        # Broadcast updated client count after join confirmation
-        await broadcast_client_count()
+        await sio.send(join_confirm_message, room=sid)
     else:
         logger.warning(f"No default room configured for client {sid} to join.")
 
@@ -148,7 +132,7 @@ async def join_room(sid, data):
     room_name = data.get('room')
     if not room_name:
         logger.error(f"Client {sid} sent join_room request without specifying room name.")
-        error_message = create_socket_message(MessageType.ERROR, "Room name is required.", sender="server")
+        error_message = create_socket_message(MessageType.ERROR, "Room name is required.", sender="localBackend")
         await sio.emit('message', error_message, room=sid)
         return
 
@@ -158,8 +142,8 @@ async def join_room(sid, data):
     # Confirm joining the room
     join_confirm_message = create_socket_message(
         MessageType.INFO,
-        f"You have joined room: {room_name}",
-        sender="server"
+        f"Someone joined room: {room_name}",
+        sender="localBackend"
     )
     await sio.emit('message', join_confirm_message, room=sid)
     
@@ -172,7 +156,7 @@ async def leave_room(sid, data):
     room_name = data.get('room')
     if not room_name:
         logger.error(f"Client {sid} sent leave_room request without specifying room name.")
-        error_message = create_socket_message(MessageType.ERROR, "Room name is required.", sender="server")
+        error_message = create_socket_message(MessageType.ERROR, "Room name is required.", sender="localBackend")
         await sio.emit('message', error_message, room=sid)
         return
 
@@ -183,14 +167,14 @@ async def leave_room(sid, data):
         leave_confirm_message = create_socket_message(
             MessageType.INFO,
             f"You have left room: {room_name}",
-            sender="server"
+            sender="localBackend"
         )
         await sio.emit('message', leave_confirm_message, room=sid)
         # Broadcast updated client count
         await broadcast_client_count()
     else:
         logger.warning(f"Client {sid} tried to leave room '{room_name}' but was not in it.")
-        error_message = create_socket_message(MessageType.WARNING, f"You are not in room: {room_name}", sender="server")
+        error_message = create_socket_message(MessageType.WARNING, f"You are not in room: {room_name}", sender="localBackend")
         await sio.emit('message', error_message, room=sid)
 
 @sio.event
@@ -209,7 +193,7 @@ async def register_internal_client(sid: str, data: Optional[Dict] = None):
         if sid in connected_clients:
             connected_clients[sid]['client_type'] = 'Internal'
         logger.info(f"Internal macOS client registered with SID: {sid}")
-        confirm_message = create_socket_message(MessageType.INFO, "Internal client registration confirmed.", sender="server")
+        confirm_message = create_socket_message(MessageType.INFO, "Internal client registration confirmed.", sender="localBackend")
         await sio.emit('message', confirm_message, room=sid)
         # Ensure the client is in the main room (should be from connect handler, but belt-and-suspenders)
         if current_room:
@@ -223,7 +207,7 @@ async def trigger_ocr(sid):
 
     if not current_room:
         logger.warning(f"No room set for OCR trigger from {sid}")
-        warning_msg = create_socket_message(MessageType.WARNING, "Server error: No processing room configured.", sender="server")
+        warning_msg = create_socket_message(MessageType.WARNING, "Server error: No processing room configured.", sender="localBackend")
         await sio.emit('message', warning_msg, room=sid)
         return
 
@@ -241,12 +225,12 @@ async def trigger_ocr(sid):
             await sio.emit('ocr_result', ocr_data, room=sid)
         else:
             logger.warning(f"OCR for {sid} returned no text.")
-            warning_msg = create_socket_message(MessageType.WARNING, "OCR processing returned no text.", sender="server")
+            warning_msg = create_socket_message(MessageType.WARNING, "OCR processing returned no text.", sender="localBackend")
             await sio.emit('message', warning_msg, room=sid)
 
     except Exception as e:
         logger.error(f"Error processing OCR for {sid}: {e}", exc_info=True)
-        error_msg = create_socket_message(MessageType.ERROR, "Server error during OCR processing.", sender="server")
+        error_msg = create_socket_message(MessageType.ERROR, "Server error during OCR processing.", sender="localBackend")
         await sio.emit('message', error_msg, room=sid)
 
 @sio.event
@@ -274,7 +258,7 @@ async def health_check():
         availability_message = create_socket_message(
             MessageType.INFO, 
             {"status": "available", "timestamp": datetime.now().isoformat()}, 
-            sender="server"
+            sender="localBackend"
         )
         await sio.emit('server_available', availability_message, room=current_room)
 

@@ -11,8 +11,6 @@ class MessageType(enum.Enum):
     WARNING = "warning"
     ERROR = "error" # Added for completeness
     TRIGGER = "trigger"
-    CODE_SOLUTION = "codeSolution" # Renamed from ocrResult
-    CLIENT_COUNT = "clientCount"
     PING = "ping"
     PONG = "pong"
     HEARTBEAT = "heartbeat"
@@ -32,7 +30,7 @@ class SocketMessageValue:
 def create_socket_message(
     message_type: MessageType,
     value: Union[str, Dict[str, Any]],
-    sender: str = "server",
+    sender: str = "localBackend",
     timestamp: bool = True
 ) -> Dict[str, Any]:
     """
@@ -61,15 +59,31 @@ def create_socket_message(
 
     return message
 
-# Example Usage (for testing this module directly)
-if __name__ == "__main__":
-    info_msg = create_socket_message(MessageType.INFO, "Server started successfully.", sender="server")
-    print(f"Info Message: {info_msg}")
+### Message Utility functions
+def create_client_count_message(count: int) -> Dict[str, Any]:
+    """Creates a client count message."""
+    return create_socket_message(
+        MessageType.CLIENT_COUNT,
+        {"count": count},    # note to self: should we standardize this or use dictionaries / strings here?        
+    )
 
-    solution_data = {"text": "print('Hello')", "language": "python"}
-    solution_msg = create_socket_message(MessageType.CODE_SOLUTION, solution_data, sender="ocr_service")
-    print(f"Code Solution Message: {solution_msg}")
+def create_ocr_result_message(result: str) -> Dict[str, Any]:
+    """Creates an OCR result message."""
+    return create_socket_message(
+        MessageType.INFO,
+        {"text": result},
+    )
 
-    count_data = {"count": 3}
-    count_msg = create_socket_message(MessageType.CLIENT_COUNT, count_data, sender="server", timestamp=False)
-    print(f"Client Count Message: {count_msg}")
+def create_welcome_message(sid: str) -> Dict[str, Any]:
+    """Creates a welcome message."""
+    return create_socket_message(
+        MessageType.INFO,
+        f"Welcome! You are connected with SID: {sid}",
+    )
+
+def create_joined_room_message(sid: str, room_name: str) -> Dict[str, Any]:
+    """Creates a message for when a client joins a room."""
+    return create_socket_message(
+        MessageType.INFO,
+        f"Client {sid} has joined room: {room_name}",
+    )
