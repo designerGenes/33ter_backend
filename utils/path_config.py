@@ -46,7 +46,7 @@ def get_screenshots_dir() -> str:
 
 # --- Specific Config Files ---
 def get_main_config_file():
-    """Get the main configuration file path."""
+    """Get the main configuration file path.≈"""
     return os.path.join(get_config_dir(), "config.json")
 
 def get_server_config_file():

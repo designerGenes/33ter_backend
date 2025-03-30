@@ -1,13 +1,1 @@
-{
-    "description": "Frequency settings for screenshots",
-    "frequency": 1.0,
-    "frequency_seconds": 1.0,
-    "max_age": 3600,
-    "max_age_seconds": 3600,
-    "max_frequency": 5.0,
-    "max_frequency_seconds": 5.0,
-    "min_age": 60,
-    "min_age_seconds": 60,
-    "min_frequency": 0.5,
-    "min_frequency_seconds": 0.5
-}
+{"frequency": 2.0}

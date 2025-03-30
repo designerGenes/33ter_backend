@@ -17,8 +17,10 @@ Components:
 
 from . import client
 from . import server
+from . import discovery_manager
 
 __all__ = [
     'client',
-    'server'
+    'server',
+    'discovery_manager'
 ]

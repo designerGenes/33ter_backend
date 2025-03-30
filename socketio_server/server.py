@@ -47,6 +47,7 @@ from utils.message_utils import (
 )
 from utils.event_utils import EventType # Added EventType import
 from core.ocr_processor import OCRProcessor
+from socketio_server.discovery_manager import DiscoveryManager
 
 # --- Globals ---
 config_data = config_manager.config  # Get the loaded config dictionary
@@ -64,6 +65,9 @@ internal_client_sid: Optional[str] = None
 health_check_task: Optional[asyncio.Task] = None
 # Use a dedicated config key or default for health check interval
 health_check_interval = config_manager.get('server', 'health_check_interval', default=30) # Example: Check every 30s
+
+# Discovery Manager Instance
+discovery_manager: Optional[DiscoveryManager] = None
 
 # --- Utility Functions ---
 
@@ -436,7 +440,7 @@ def parse_args():
 
 async def start_server(host: str, port: int):
     """Starts the Socket.IO server and related tasks."""
-    global health_check_task # Rename task variable for clarity
+    global health_check_task, discovery_manager
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
@@ -453,6 +457,10 @@ async def start_server(host: str, port: int):
     health_check_task = asyncio.create_task(periodic_tasks()) # Use renamed task function
     logger.info(f"Periodic tasks started with interval: {health_check_interval}s")
 
+    # Start Bonjour/Zeroconf discovery
+    discovery_manager = DiscoveryManager(logger) 
+    discovery_manager.start_discovery(port=port)
+
     # Keep server running
     await asyncio.Event().wait()
 
@@ -466,6 +474,11 @@ async def stop_server():
             await health_check_task
         except asyncio.CancelledError:
             logger.info("Periodic tasks task cancelled.")
+
+    # Stop Bonjour discovery
+    if discovery_manager:
+        discovery_manager.stop_discovery()
+
     # Add any other specific cleanup needed for sio or app
     # await app.shutdown() # Example if needed
     # await app.cleanup()  # Example if needed
@@ -474,6 +487,8 @@ async def stop_server():
 def cleanup_on_exit():
     """Perform cleanup actions when the server exits."""
     logger.info("Performing cleanup on exit...")
+    # Discovery manager cleanup is handled by its own atexit registration
+    # or the explicit call in stop_server if the loop is running.
 
 atexit.register(cleanup_on_exit)
 
