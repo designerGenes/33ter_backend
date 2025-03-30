@@ -96,6 +96,8 @@ async def any_event(event, sid, data):
 async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
     """Handle new client connections."""
     client_ip = environ.get('REMOTE_ADDR', 'Unknown IP')
+    # Log connection attempt *before* processing
+    logger.info(f"Connection attempt received from SID: {sid}, IP: {client_ip}")
     # Infer client type from auth or headers (example)
     client_type = 'Unknown'
     if auth and 'client_type' in auth:
@@ -445,23 +447,32 @@ async def start_server(host: str, port: int):
     await runner.setup()
     site = web.TCPSite(runner, host, port)
 
-    logger.info(f"Starting Socket.IO server on {host}:{port}")
-    await site.start()
-    logger.info(f"Socket.IO server running. Default room: {current_room}")
+    logger.info(f"Attempting to start Socket.IO server on {host}:{port}")
+    try:
+        await site.start()
+        # Log *after* successful start
+        logger.info(f"✅ Socket.IO server successfully listening on {host}:{port}")
+        logger.info(f"   Default room: {current_room}")
+    except Exception as e:
+        logger.critical(f"❌ Failed to start web server on {host}:{port}: {e}", exc_info=True)
+        # Optionally re-raise or handle differently
+        raise
 
     # Emit SERVER_STARTED event
     if current_room:
         await sio.emit(EventType.SERVER_STARTED.value, {}, room=current_room)
 
     # Start periodic tasks
-    health_check_task = asyncio.create_task(periodic_tasks()) # Use renamed task function
+    health_check_task = asyncio.create_task(periodic_tasks())
     logger.info(f"Periodic tasks started with interval: {health_check_interval}s")
 
-    # Start Bonjour/Zeroconf discovery
-    discovery_manager = DiscoveryManager(logger) 
-    discovery_manager.start_discovery(port=port)
+    # Start Bonjour/Zeroconf discovery (now async)
+    logger.info("Initializing and starting Bonjour discovery...")
+    discovery_manager = DiscoveryManager(logger)
+    await discovery_manager.start_discovery(port=port) # <-- Await the async call
 
     # Keep server running
+    logger.info("Server startup complete. Waiting for connections...")
     await asyncio.Event().wait()
 
 
@@ -475,9 +486,11 @@ async def stop_server():
         except asyncio.CancelledError:
             logger.info("Periodic tasks task cancelled.")
 
-    # Stop Bonjour discovery
+    # Stop Bonjour discovery (now async)
     if discovery_manager:
-        discovery_manager.stop_discovery()
+        logger.info("Stopping Bonjour discovery...")
+        await discovery_manager.stop_discovery() # <-- Await the async call
+        logger.info("Bonjour discovery stopped.")
 
     # Add any other specific cleanup needed for sio or app
     # await app.shutdown() # Example if needed

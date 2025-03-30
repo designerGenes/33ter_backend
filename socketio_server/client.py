@@ -184,12 +184,16 @@ class ScreenshotClient:
                  self.logger.debug(f"Received unhandled event '{event}': {str(data)[:200]}")
 
 
+    def register_as_internal_client(self):
+        """Register this client as an internal client on the server."""
+        self.sio.emit('register_internal_client', {}) # Identify self to server
+
     def connect_to_server(self):
         """Connect to the Socket.IO server."""
         host = config_manager.get('server', 'host', default='localhost')
         port = config_manager.get('server', 'port', default=5348)
         server_url = f"http://{host}:{port}"
-        #self.logger.info(f"Attempting to connect to server at {server_url}")
+        self.logger.info(f"Attempting to connect to server at {server_url}")
         try:
             # Set user agent to identify as Python client
             headers = {
@@ -200,10 +204,10 @@ class ScreenshotClient:
             self.sio.connect(server_url, headers=headers, auth=auth, transports=['websocket']) # Prefer websocket
             return True
         except socketio.exceptions.ConnectionError as e:
-            #self.logger.error(f"Failed to connect to server: {e}")
+            self.logger.error(f"Failed to connect to server: {e}")
             return False
         except Exception as e:
-            #self.logger.error(f"An unexpected error occurred during connection: {e}", exc_info=True)
+            self.logger.error(f"An unexpected error occurred during connection: {e}", exc_info=True)
             return False
 
     # Modified to accept requester_sid and send result/error back to server
@@ -248,13 +252,12 @@ class ScreenshotClient:
     def disconnect(self):
         """Disconnect from the Socket.IO server."""
         if self.sio and self.sio.connected:
-            #self.logger.info("Disconnecting from server...")
+            self.logger.info("Disconnecting from server...")
             # self.screenshot_manager.stop_capturing() # Remove if not used
             self.sio.disconnect()
-            #self.logger.info("Disconnected.")
+            self.logger.info("Disconnected.")
         else:
-            pass
-            #self.logger.info("Already disconnected or client not initialized.")
+            self.logger.info("Already disconnected or client not initialized.")
 
 def main():
     """Main entry point."""
