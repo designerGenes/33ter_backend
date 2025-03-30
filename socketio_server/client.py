@@ -71,7 +71,7 @@ class ScreenshotClient:
 
         # Initialize Socket.IO client with reduced logging
         self.sio = socketio.Client(logger=False, engineio_logger=False)
-        self.register_handlers()
+        self.setup_handlers()
 
         # Initialize OCR Processor (used for processing)
         self.ocr_processor = OCRProcessor()
@@ -79,66 +79,110 @@ class ScreenshotClient:
         # or if capture is triggered differently. Adjust based on actual implementation.
         # self.screenshot_manager = ScreenshotManager() # Remove if OCRProcessor handles capture
 
-    # --- Socket.IO Event Handlers ---
+    def setup_handlers(self):
+        """Set up Socket.IO event handlers."""
+        @self.sio.event
+        def connect():
+            #self.logger.info("Connected to Socket.IO server")
+            # No longer automatically joins room here, server handles via registration
+            # No longer starts capture here, assuming capture runs independently or is triggered
+            # Emit registration event instead
+            #self.logger.info("Registering as internal client...")
+            self.sio.emit('register_internal_client', {}) # Identify self to server
 
-    def register_handlers(self):
-        """Register Socket.IO event handlers."""
-        # Use instance method decorators
-        self.sio.on('connect', self.on_connect)
-        self.sio.on('disconnect', self.on_disconnect)
-        self.sio.on('message', self.on_message)
-        # Add specific handler for PERFORM_OCR_REQUEST
-        self.sio.on(MessageType.PERFORM_OCR_REQUEST.value, self.on_perform_ocr_request)
+        @self.sio.event
+        def disconnect():
+            #self.logger.info("Disconnected from Socket.IO server")
+            # Stop any ongoing processes if necessary
+            self.screenshot_manager.stop_capturing()
 
-    # @self.sio.event # Decorator applied via sio.on in register_handlers
-    def on_connect(self):
-        """Handle connection to the server."""
-        self.logger.info(f"Successfully connected to server with SID: {self.sio.sid}")
-        self.is_connected = True
-        # Register as the internal client upon connection
-        self.register_as_internal_client()
+        @self.sio.event
+        def connect_error(data):
+            self.logger.error(f"Connection failed: {data}")
+            pass
 
-    # @self.sio.event # Decorator applied via sio.on in register_handlers
-    def on_disconnect(self):
-        """Handle disconnection from the server."""
-        self.logger.warning("Disconnected from server.")
-        self.is_connected = False
+        # --- Message Handlers ---
 
-    # @self.sio.event # Decorator applied via sio.on in register_handlers
-    def on_message(self, data):
-        """Handle generic messages received from the server."""
-        self.logger.info(f"Received message: {data}")
-        # Add specific message handling if needed
+        # Handle request from server to perform OCR
+        @self.sio.on(MessageType.PERFORM_OCR_REQUEST.value)
+        def on_perform_ocr_request(data):
+            requester_sid = data.get('requester_sid')
+            if not requester_sid:
+                self.logger.error(f"Received '{MessageType.PERFORM_OCR_REQUEST.value}' without requester_sid.")
+                return
+            #self.logger.info(f"Received OCR request from server for requester: {requester_sid}")
+            # Call processing function, passing the requester_sid
+            self.process_latest_screenshot(requester_sid=requester_sid)
 
-    # Handler for PERFORM_OCR_REQUEST message type
-    # No decorator needed as it's registered via sio.on
-    def on_perform_ocr_request(self, data):
-        """Handle request from server to perform OCR."""
-        requester_sid = data.get('requester_sid')
-        self.logger.info(f"Received OCR request from server for iOS client: {requester_sid}")
+        # Handle generic messages (e.g., INFO, WARNING from server)
+        @self.sio.on('message')
+        def on_message(data):
+            msg_type = data.get('messageType')
+            msg_value = data.get('value')
+            msg_from = data.get('from')
+            #self.logger.info(f"Received message from {msg_from}: Type={msg_type}, Value='{str(msg_value)[:100]}...'")
+            # Add specific handling if needed (e.g., for CLIENT_COUNT message)
+            if msg_type == MessageType.CLIENT_COUNT.value:
+                 count = msg_value.get('count', '?')
+                 #self.logger.info(f"Current iOS client count from server: {count}")
 
-        # Trigger the OCR process
-        ocr_text = self.perform_ocr()
 
-        # Send the result back to the server
-        if ocr_text is not None:
-            self.send_ocr_result(requester_sid, ocr_text)
-        else:
-            # Handle OCR failure (e.g., send an error message)
-            self.logger.error("OCR process failed, not sending result.")
-            # Optionally send an error message back to the server
-            error_payload = {
-                "requester_sid": requester_sid,
-                "error": "OCR process failed on internal client."
-            }
-            # Define an appropriate error message type if needed, or use generic message
-            # self.sio.emit('ocr_error', error_payload)
+        # --- Event Handlers (for logging/awareness) ---
+        # Use @self.sio.event for built-in events, @self.sio.on for custom ones
 
-    # --- Internal Client Actions ---
+        @self.sio.on(EventType.SERVER_STARTED.value)
+        def on_server_started(data):
+            self.logger.info("Received event: Server Started")
 
-    def register_as_internal_client(self):
-        """Register this client as an internal client on the server."""
-        self.sio.emit('register_internal_client', {}) # Identify self to server
+        @self.sio.on(EventType.CLIENT_CONNECTED.value)
+        def on_client_connected(data):
+            self.logger.info(f"Received event: Client Connected - SID: {data.get('sid')}, Type: {data.get('client_type')}")
+
+        @self.sio.on(EventType.CLIENT_DISCONNECTED.value)
+        def on_client_disconnected(data):
+            self.logger.info(f"Received event: Client Disconnected - SID: {data.get('sid')}")
+
+        @self.sio.on(EventType.CLIENT_JOINED_ROOM.value)
+        def on_client_joined(data):
+            self.logger.info(f"Received event: Client Joined Room - SID: {data.get('sid')}, Room: {data.get('room')}")
+
+        @self.sio.on(EventType.CLIENT_LEFT_ROOM.value)
+        def on_client_left(data):
+            self.logger.info(f"Received event: Client Left Room - SID: {data.get('sid')}, Room: {data.get('room')}")
+
+        @self.sio.on(EventType.UPDATED_CLIENT_COUNT.value)
+        def on_client_count_event(data):
+             # Log the event payload directly
+             self.logger.info(f"Received event: Updated Client Count - Payload: {data}")
+
+        @self.sio.on(EventType.OCR_PROCESSING_STARTED.value)
+        def on_ocr_started(data):
+            self.logger.info(f"Received event: OCR Processing Started - Requester: {data.get('requester_sid')}")
+
+        @self.sio.on(EventType.OCR_PROCESSING_COMPLETED.value)
+        def on_ocr_completed(data):
+            status = "Success" if data.get('success') else f"Failed ({data.get('error', 'Unknown')})"
+            self.logger.info(f"Received event: OCR Processing Completed - Requester: {data.get('requester_sid')}, Status: {status}")
+
+        @self.sio.on(EventType.PROCESSED_SCREENSHOT.value)
+        def on_screenshot_processed(data):
+             status = "Success" if data.get('success') else f"Failed ({data.get('error', 'Unknown')})"
+             preview = data.get('text_preview', '')
+             #self.logger.info(f"Received event: Processed Screenshot - Status: {status}, Preview: '{preview}'")
+
+        # Catch-all for unhandled events (optional)
+        @self.sio.on('*')
+        def catch_all(event, data):
+            # Avoid logging standard connect/disconnect/message here as they have specific handlers
+            if event not in ['connect', 'disconnect', 'message',
+                             MessageType.PERFORM_OCR_REQUEST.value, # Handled above
+                             EventType.SERVER_STARTED.value, EventType.CLIENT_CONNECTED.value, # etc...
+                             EventType.CLIENT_DISCONNECTED.value, EventType.CLIENT_JOINED_ROOM.value,
+                             EventType.CLIENT_LEFT_ROOM.value, EventType.UPDATED_CLIENT_COUNT.value,
+                             EventType.OCR_PROCESSING_STARTED.value, EventType.OCR_PROCESSING_COMPLETED.value,
+                             EventType.PROCESSED_SCREENSHOT.value]:
+                 self.logger.debug(f"Received unhandled event '{event}': {str(data)[:200]}")
+
 
     def connect_to_server(self):
         """Connect to the Socket.IO server."""
