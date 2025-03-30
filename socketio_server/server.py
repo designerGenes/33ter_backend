@@ -323,11 +323,13 @@ async def register_internal_client(sid: str, data: Optional[Dict] = None):
 
 # Renamed from trigger_ocr to handle the message type
 @sio.on(MessageType.TRIGGER_OCR.value)
-async def on_trigger_ocr_message(sid, data):
-    """Handle OCR trigger MESSAGE from iOS client."""
-    logger.info(f"Received '{MessageType.TRIGGER_OCR.value}' message from client {sid}. Data: {data}")
-    """Common handler for OCR trigger requests from any source."""
-    logger.info(f"Handling OCR trigger for requester {requester_sid}")
+async def on_trigger_ocr_message(sid: str, data: Any): # Add data parameter
+    # Log both the library-provided SID and the received data
+    logger.info(f"Received '{MessageType.TRIGGER_OCR.value}' message from client SID: {sid}. Data received: {data}")
+    
+    # Use the library-provided SID as the requester ID
+    requester_sid = sid 
+    logger.info(f"Handling OCR trigger for requester_sid: {requester_sid}")
     
     # Emit event indicating processing has started
     start_event_payload = {"requester_sid": requester_sid}
@@ -335,9 +337,10 @@ async def on_trigger_ocr_message(sid, data):
 
     # Check if internal client is connected and ready
     if internal_client_sid and internal_client_sid in connected_clients:
-        logger.info(f"Forwarding OCR request to internal client: {internal_client_sid}")
-        # Send targeted message to internal client
+        logger.info(f"Forwarding OCR request directly to internal client: {internal_client_sid}")
+        # Send targeted message to internal client SID
         request_payload = {"requester_sid": requester_sid} # Pass original requester SID
+        # Emit directly to the internal client's SID, not the room
         await sio.emit(MessageType.PERFORM_OCR_REQUEST.value, request_payload, room=internal_client_sid)
         return True
     else:

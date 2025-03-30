@@ -15,6 +15,9 @@ import asyncio
 
 from pathlib import Path
 
+# Add MessageType import
+from utils.message_utils import MessageType
+
 try:
     from utils.path_config import get_logs_dir, get_screenshots_dir, get_temp_dir, get_project_root
     from utils.server_config import get_server_config, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
@@ -352,6 +355,20 @@ class ProcessManager:
                 self.logger.debug(f"Internal client received event '{event}': {data}")
                 self._add_to_buffer("debug", f"INTERNAL_CLIENT_RECV: Event='{event}', Data='{str(data)[:100]}...'", "info")
 
+        # Add handler for PERFORM_OCR_REQUEST from the server
+        @self.internal_sio_client.on(MessageType.PERFORM_OCR_REQUEST.value)
+        def on_perform_ocr_request(data):
+            self.logger.info(f"Internal client received '{MessageType.PERFORM_OCR_REQUEST.value}' request: {data}")
+            self._add_to_buffer("debug", f"INTERNAL_CLIENT_RECV: Received OCR request: {data}", "info")
+            requester_sid = data.get('requester_sid')
+            if requester_sid:
+                self.logger.info(f"Processing OCR request for original requester: {requester_sid}")
+                # Call the processing function, passing the requester_sid
+                self.process_and_send_ocr_result(requester_sid=requester_sid)
+            else:
+                self.logger.warning("Received OCR request without 'requester_sid'. Cannot process.")
+                self._add_to_buffer("debug", "INTERNAL_CLIENT_WARN: OCR request missing requester_sid", "warning")
+
         self.logger.info("Internal client setup complete.")
 
     def _connect_internal_client_thread_target(self):
@@ -529,13 +546,18 @@ class ProcessManager:
                 self._start_internal_client_connection()
             return False
 
-    def process_and_send_ocr_result(self) -> bool:
+    def process_and_send_ocr_result(self, requester_sid: Optional[str] = None) -> bool:
         """
         Manually triggers the ScreenshotManager to process the latest screenshot
         and sends the result via the internal Socket.IO client.
+
+        Args:
+            requester_sid: The SID of the original client that requested the OCR (optional).
+                           If provided, it's included in the result payload.
         """
-        self.logger.info("Manual OCR trigger initiated.")
-        self._add_to_buffer("debug", "Manual OCR trigger initiated.", "info")
+        trigger_source = "Manual" if requester_sid is None else f"Remote (SID: {requester_sid})"
+        self.logger.info(f"{trigger_source} OCR trigger initiated.")
+        self._add_to_buffer("debug", f"{trigger_source} OCR trigger initiated.", "info")
 
         # --- Add detailed check logging ---
         client_exists = self.internal_sio_client is not None
@@ -546,7 +568,7 @@ class ProcessManager:
         # --- End detailed check logging ---
 
         try:
-            ocr_text = self.screenshot_manager.process_latest_screenshot(manual_trigger=True)
+            ocr_text = self.screenshot_manager.process_latest_screenshot(manual_trigger=(requester_sid is None))
             if ocr_text is None:
                 self.logger.warning("Manual OCR processing returned no text or failed.")
                 self._add_to_buffer("debug", "Manual OCR processing returned no text or failed.", "warning")
@@ -567,17 +589,26 @@ class ProcessManager:
             return False
 
         # Check connection status *after* OCR processing is done
+        client_exists = self.internal_sio_client is not None
+        event_set = self.internal_sio_connected.is_set()
+        client_connected_prop = self.internal_sio_client.connected if client_exists else False
+
         if client_exists and event_set and client_connected_prop:
             try:
-                # The server now expects 'ocr_result' event, not a generic 'message' for this
-                payload = {  # Send dict directly, not list containing dict
+                # The server now expects 'ocr_result' event
+                payload = {
                     'text': ocr_text,
                     'timestamp': datetime.now().isoformat(),
-                    'from': 'localBackend'
+                    'from': 'localBackend',
+                    # Include the original requester SID if available
+                    'requester_sid': requester_sid
                 }
-                self.internal_sio_client.emit('ocr_result', payload)
-                self.logger.info("Manual OCR result sent successfully via internal client.")
-                self._add_to_buffer("debug", f"SENDING OCR RESULT (manual): '{ocr_text[:50]}...'", "info")
+                # Remove None values from payload before sending
+                payload = {k: v for k, v in payload.items() if v is not None}
+
+                self.internal_sio_client.emit(MessageType.OCR_RESULT.value, payload)
+                self.logger.info(f"{trigger_source} OCR result sent successfully via internal client.")
+                self._add_to_buffer("debug", f"SENDING OCR RESULT ({trigger_source}): '{ocr_text[:50]}...'", "info")
                 return True
             except Exception as e:
                 self.logger.error(f"Failed to send manual OCR result via internal client: {e}", exc_info=True)

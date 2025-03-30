@@ -108,7 +108,7 @@ class ScreenshotClient:
         def on_perform_ocr_request(data):
             requester_sid = data.get('requester_sid')
             if not requester_sid:
-                #self.logger.error(f"Received '{MessageType.PERFORM_OCR_REQUEST.value}' without requester_sid.")
+                self.logger.error(f"Received '{MessageType.PERFORM_OCR_REQUEST.value}' without requester_sid.")
                 return
             #self.logger.info(f"Received OCR request from server for requester: {requester_sid}")
             # Call processing function, passing the requester_sid
