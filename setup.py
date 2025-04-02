@@ -59,10 +59,13 @@ def main():
         print(f"Error installing dependencies: {e}")
         sys.exit(1)
 
-    print("\nSetup complete! Now run:")
-    print(f"source {venv_path}/bin/activate")
-    print("export PYTHONPATH=$PYTHONPATH:/Users/jadennation/DEV/33ter/app")
-    print("python3 socketio_server/client.py")
+    print("\nSetup complete!")
+    print("IMPORTANT: Ensure Tesseract OCR is installed via Homebrew:")
+    print("  brew install tesseract")
+    print("\nNow run:")
+    print(f"  source {venv_path}/bin/activate")
+    print("  export PYTHONPATH=$PYTHONPATH:/Users/jadennation/DEV/33ter/LocalBackend") # Adjusted path for clarity
+    print("  python3 /Users/jadennation/DEV/33ter/LocalBackend/start_local_dev.py") # Use absolute path
 
 if __name__ == "__main__":
     main()
