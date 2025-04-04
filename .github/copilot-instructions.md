@@ -1,9 +1,9 @@
-# 33ter - AI-Powered Code Solution App
+# Threethreeter - AI-Powered Code Solution App
 
-- VERY IMPORTANT:  Make sure to use FULL directory paths any time you use a terminal command.  Do not use a command like "mkdir app/dir".  If the project directory is "$HOME/dev/33ter" then you would in this case use: 
-"mkdir -p $HOME/dev/33ter/app/dir"
+- VERY IMPORTANT:  Make sure to use FULL directory paths any time you use a terminal command.  Do not use a command like "mkdir app/dir".  If the project directory is "$HOME/dev/Threethreeter" then you would in this case use: 
+"mkdir -p $HOME/dev/Threethreeter/app/dir"
 OR
-"cd $HOME/dev/33ter && mkdir -p app/dir"
+"cd $HOME/dev/Threethreeter && mkdir -p app/dir"
 
 
 ## FROZEN code sections
@@ -25,7 +25,7 @@ Whenever you get a command that is just "@FixList", you must interpret this to m
 Whenever a command contains the "@careful" tag, you must interpret this to mean: "Do NOT make any code changes whatsoever in response to this command.  Instead, build a detailed plan for how you would achieve the result specified by this command.  Print out this entire plan, step by step, including the names of specific files, types and functions your plan would involve changing.  Again, you must NOT make any actual code changes.  When your entire plan of changes is printed out, review it from top to bottom TWICE and identify any potential bugs these steps would introduce.  After each review, adjust your plan of changes if needed to eliminate any potential bugs you have identified that the previous version of your plan of changes might have caused.  Once you are done, ask 'May I proceed?'.  Only upon a response of 'Proceed' should you then implement the changes described in your pristine, self-reviewed list."
 
 ## the @GOODMORNING command
-Whenever you get a command that is just "@GOODMORNING", you must interpret this to mean "a new day has begun, so momentarily leave behind your memory of the project and recreate inside the nearest '.github' folder a document named 'implementationplan.md'.  If this file already exists, you may consume its contents for inspiration.  You need to analyze our ENTIRE currently focused project (which can be "33ter" or its sub-projects "local python backend", "iOS receiver", or "Azure function" depending on our currently workspace contents).  You must then fill the nearest .github/implementationplan.md with four (4) elements:
+Whenever you get a command that is just "@GOODMORNING", you must interpret this to mean "a new day has begun, so momentarily leave behind your memory of the project and recreate inside the nearest '.github' folder a document named 'implementationplan.md'.  If this file already exists, you may consume its contents for inspiration.  You need to analyze our ENTIRE currently focused project (which can be "Threethreeter" or its sub-projects "local python backend", "iOS receiver", or "Azure function" depending on our currently workspace contents).  You must then fill the nearest .github/implementationplan.md with four (4) elements:
 1. a thorough explanation of the goal and functionality of this currently open workspace (which can again be either the entire project or one of the individual sub-projects)
 2. a thorough, organized, step-by-step walkthrough of all conceptual behaviors which take place inside this project or all its sub-projects, in order to achieve the goal or functionality described above
 3. a thorough, organized list of all remaining UNFINISHED or MISCONFIGURED or AMBIGUOUS elements of this project or all its sub-projects

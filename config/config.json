@@ -2,7 +2,7 @@
   "services": {
     "socket": {
       "port": 5348,
-      "room": "33ter_room"
+      "room": "Threethreeter_room"
     },
     "screenshot": {
       "frequency": 4.0,
@@ -11,15 +11,15 @@
     "main": {
       "ip": "0.0.0.0",
       "port": 5347,
-      "room": "33ter_room"
+      "room": "Threethreeter_room"
     },
     "publishMessage": {
       "port": 5348,
-      "room": "33ter_room"
+      "room": "Threethreeter_room"
     },
     "processStream": {
       "port": 5347,
-      "room": "33ter_room"
+      "room": "Threethreeter_room"
     }
   },
   "logging": {

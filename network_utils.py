@@ -1,7 +1,7 @@
 import socket
 import logging
 
-logger = logging.getLogger('33ter-NetworkUtils')
+logger = logging.getLogger('Threethreeter-NetworkUtils')
 
 def get_local_ip() -> str | None:
     """

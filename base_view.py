@@ -6,7 +6,7 @@ import os
 import time
 import logging # Import logging
 from abc import ABC, abstractmethod
-from .color_scheme import *
+from color_scheme import *
 
 class BaseView(ABC):
     """Abstract base class for all terminal UI views."""
@@ -47,7 +47,7 @@ class BaseView(ABC):
             # Check width before drawing
             if scr_w > 0:
                 self.stdscr.hline(0, 0, ' ', scr_w, curses.color_pair(HEADER_PAIR))
-                title = " 33ter Local Backend Monitor "
+                title = " Threethreeter Local Backend Monitor "
                 # Ensure title fits, adjust centering if needed
                 start_col = max(0, (scr_w - len(title)) // 2)
                 # Truncate title if needed

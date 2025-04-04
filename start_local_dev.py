@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""33ter Process Manager Entry Point
+"""Threethreeter Process Manager Entry Point
 
-This script serves as the main entry point for the 33ter application. It initializes and
+This script serves as the main entry point for the Threethreeter application. It initializes and
 manages all core services including screenshot capture, OCR processing, and Socket.IO
 communication. It provides a terminal-based UI for monitoring and controlling these services.
 
@@ -23,19 +23,18 @@ Key Features:
 """
 
 import curses
-import os
 import sys
 import argparse
 import logging
-import traceback  # Import the traceback module
+import traceback
 from typing import Optional
 
 try:
-    from utils.system_check import print_system_status
-    from utils.path_config import get_logs_dir
-    from utils.config_loader import config
-    from core.process_manager import ProcessManager
-    from core.terminal_ui import TerminalUI
+    # Use explicit relative imports since this script is inside the Threethreeter package
+    from system_check import print_system_status
+    from config_loader import config
+    from process_manager import ProcessManager
+    from terminal_ui import TerminalUI
 except ImportError as e:
     print(f"Error importing required modules: {e}", file=sys.stderr)  # Print import errors to stderr
     print("Please ensure you're running from the correct directory and all dependencies are installed.", file=sys.stderr)
@@ -95,7 +94,7 @@ def setup_environment() -> Optional[ProcessManager]:
 
 def main() -> int:
     """Main application entry point."""
-    parser = argparse.ArgumentParser(description='33ter Process Manager')
+    parser = argparse.ArgumentParser(description='Threethreeter Process Manager')
     parser.add_argument('--skip-checks', action='store_true',
                        help='Skip system requirement checks')
     parser.add_argument('--debug', action='store_true',
@@ -107,7 +106,7 @@ def main() -> int:
         config.set("logging", "level", value="DEBUG")
     setup_logging()
 
-    module_logger.info("33ter Process Manager starting...")
+    module_logger.info("Threethreeter Process Manager starting...")
 
     process_manager = None
     try:

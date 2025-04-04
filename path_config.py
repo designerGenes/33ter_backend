@@ -1,4 +1,4 @@
-"""Path configuration utilities for the 33ter application.
+"""Path configuration utilities for the Threethreeter application.
 
 Provides functions to get standardized paths for various application directories
 like logs, configuration, temporary files, and screenshots. Ensures consistency
@@ -17,8 +17,8 @@ from pathlib import Path
 def get_project_root() -> str:
     """Get the absolute path to the LocalBackend project directory."""
     # Assumes this file is in LocalBackend/utils/
-    # Goes up two levels: utils -> LocalBackend
-    return str(Path(__file__).parent.parent.absolute())
+    # Goes up one level: utils -> LocalBackend
+    return str(Path(__file__).parent.absolute())
 
 # --- Configuration Directory ---
 def get_config_dir() -> str:

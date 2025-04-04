@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""33ter Socket.IO Server
+"""Threethreeter Socket.IO Server
 
 This module implements the Socket.IO server that handles communication between the Python
 screenshot/OCR service and the iOS app. It manages client connections, rooms, and message
@@ -20,7 +20,6 @@ Key Features:
 - Consider adding message queuing for reliability
 - Implement proper SSL/TLS support
 """
-import os
 import sys
 from pathlib import Path
 import logging  # Move logging import earlier
@@ -38,16 +37,14 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 # Import local modules after path adjustment
-from utils.config_loader import config as config_manager
+from config_loader import config as config_manager
 # Updated imports: MessageType is now primary, EventType added
-from utils.message_utils import (
+from message_utils import (
     create_socket_message, create_client_count_message,
-    create_welcome_message, create_join_leave_message,
-    create_ocr_result_message, MessageType
+    create_welcome_message, create_join_leave_message, MessageType
 )
-from utils.event_utils import EventType # Added EventType import
-from core.ocr_processor import OCRProcessor
-from socketio_server.discovery_manager import DiscoveryManager
+from event_utils import EventType # Added EventType import
+from discovery_manager import DiscoveryManager
 
 # --- Globals ---
 config_data = config_manager.config  # Get the loaded config dictionary
@@ -58,7 +55,7 @@ sio.attach(app)
 
 # Client tracking
 connected_clients: Dict[str, Dict[str, Any]] = {}
-current_room: Optional[str] = config_manager.get('server', 'room', default='33ter_room')
+current_room: Optional[str] = config_manager.get('server', 'room', default='Threethreeter_room')
 internal_client_sid: Optional[str] = None
 
 # Health check related
@@ -103,7 +100,7 @@ async def connect(sid: str, environ: Dict, auth: Optional[Dict] = None):
     if auth and 'client_type' in auth:
         client_type = auth['client_type']
     elif 'HTTP_USER_AGENT' in environ:
-        if 'Python/33ter-Client' in environ['HTTP_USER_AGENT']:
+        if 'Python/Threethreeter-Client' in environ['HTTP_USER_AGENT']:
             client_type = 'Internal' # Identify internal client by User-Agent
         elif 'iOS' in environ['HTTP_USER_AGENT']: # Example heuristic
              client_type = 'iOS'
@@ -431,7 +428,7 @@ async def periodic_tasks():
 # --- Argument Parsing ---
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="33ter Socket.IO Server")
+    parser = argparse.ArgumentParser(description="Threethreeter Socket.IO Server")
     parser.add_argument('--host', type=str, default=config_manager.get('server', 'host', default='0.0.0.0'),
                         help='Host IP address to bind the server to.')
     parser.add_argument('--port', type=int, default=config_manager.get('server', 'port', default=5348),

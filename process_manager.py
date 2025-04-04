@@ -1,8 +1,7 @@
-"""Process management module for 33ter application."""
+"""Process management module for Threethreeter application."""
 import os
 import sys
 import time
-import json
 import logging
 import subprocess
 import threading
@@ -11,19 +10,18 @@ from collections import deque
 from typing import Dict, Optional, List, Union, IO, Tuple, Any
 from datetime import datetime
 import socketio
-import asyncio
 
 from pathlib import Path
 
 # Add MessageType import
-from utils.message_utils import MessageType
+from message_utils import MessageType
 
 try:
-    from utils.path_config import get_logs_dir, get_screenshots_dir, get_temp_dir, get_project_root
-    from utils.server_config import get_server_config, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
-    from utils.config_loader import config as config_manager
-    from core.screenshot_manager import ScreenshotManager
-    from core.message_system import MessageManager, MessageLevel, MessageCategory
+    from path_config import get_logs_dir, get_screenshots_dir, get_temp_dir, get_project_root
+    from server_config import get_server_config, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
+    from config_loader import config as config_manager
+    from screenshot_manager import ScreenshotManager
+    from message_system import MessageManager, MessageLevel, MessageCategory
 except ImportError as e:
     print(f"Error importing required modules in process_manager.py: {e}", file=sys.stderr)
     traceback.print_exc(file=sys.stderr)
@@ -35,10 +33,10 @@ SOCKETIO_SERVER_SCRIPT = os.path.join(get_project_root(), "socketio_server", "se
 STARTUP_TIMEOUT = 10  # seconds to wait for server startup message
 
 class ProcessManager:
-    """Manages the lifecycle of core 33ter processes."""
+    """Manages the lifecycle of core Threethreeter processes."""
 
     def __init__(self):
-        self.logger = logging.getLogger('33ter-ProcessManager')
+        self.logger = logging.getLogger('Threethreeter-ProcessManager')
         self.config = get_server_config()
         self.message_manager = MessageManager()  # Initialize MessageManager first
 
@@ -318,7 +316,7 @@ class ProcessManager:
             self.internal_sio_connected.set()
             self._add_to_buffer("debug", "INTERNAL_CLIENT: Connected successfully", "info")
             try:
-                room = self.config.get('server', {}).get('room', '33ter_room')
+                room = self.config.get('server', {}).get('room', 'Threethreeter_room')
                 self.logger.info(f"Internal client joining room: {room}")
                 # Emit register_internal_client instead of just join_room
                 self.internal_sio_client.emit('register_internal_client', {})

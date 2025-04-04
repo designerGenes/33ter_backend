@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""33ter Socket.IO Client
+"""Threethreeter Socket.IO Client
 
-This module implements the Socket.IO client that connects to the 33ter server and manages
+This module implements the Socket.IO client that connects to the Threethreeter server and manages
 screenshot processing and OCR text transmission. It handles connection management,
 screenshot triggers, and client status updates.
 
@@ -28,12 +28,11 @@ import socketio
 from datetime import datetime
 # Ensure utils and core components are importable
 try:
-    from utils.config_loader import config as config_manager # Use ConfigManager
-    from utils.path_config import get_logs_dir # Use path_config
+    from config_loader import config as config_manager # Use ConfigManager
     # Assuming ScreenshotManager now uses OCRProcessor internally or OCRProcessor is separate
-    from core.ocr_processor import OCRProcessor
-    from utils.message_utils import MessageType # Import MessageType
-    from utils.event_utils import EventType # Import EventType
+    from ocr_processor import OCRProcessor
+    from message_utils import MessageType # Import MessageType
+    from event_utils import EventType # Import EventType
 except ImportError as e:
     print(f"Error importing modules in client.py: {e}", file=sys.stderr)
     # Add more detailed error logging if possible
@@ -197,7 +196,7 @@ class ScreenshotClient:
         try:
             # Set user agent to identify as Python client
             headers = {
-                'User-Agent': 'Python/33ter-Client'
+                'User-Agent': 'Python/Threethreeter-Client'
             }
             # Add auth dictionary if needed by server
             auth = {'client_type': 'Internal'}
@@ -261,7 +260,7 @@ class ScreenshotClient:
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description='33ter Screenshot Client')
+    parser = argparse.ArgumentParser(description='Threethreeter Screenshot Client')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
     client = None # Initialize client to None

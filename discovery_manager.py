@@ -1,7 +1,6 @@
 import socket
 import logging
 import atexit
-import time
 import asyncio
 from typing import Optional
 
@@ -14,7 +13,7 @@ except ImportError:
     class Zeroconf: pass
     class ServiceInfo: pass
 
-from utils.network_utils import get_local_ip
+from network_utils import get_local_ip
 
 class DiscoveryManager:
     """Manages Bonjour (mDNS/Zeroconf) service discovery for the server."""
@@ -25,21 +24,22 @@ class DiscoveryManager:
         self.service_info: Optional[ServiceInfo] = None
         self.registered = False
 
+        # CHANGE: Shorten service name to fit within 15 byte limit
+        self.service_name = "t3t-io"  # Shortened from "Threethreeter-socketio"
+
         if not zeroconf_available:
             self.logger.warning("The 'zeroconf' library is not installed. Bonjour discovery will be disabled.")
             self.logger.warning("Install it using: pip install zeroconf")
 
     async def start_discovery(self,
                         port: int,
-                        service_type: str = "_33ter-socketio._tcp.local.",
-                        service_name: str = "33ter Backend"):
+                        service_type: str = "_http._tcp.local."):
         """
         Starts advertising the service via Bonjour asynchronously.
 
         Args:
             port (int): The port the service is running on.
             service_type (str): The Bonjour service type string.
-            service_name (str): The name for this specific service instance.
         """
         if not zeroconf_available or self.registered:
             return
@@ -54,7 +54,7 @@ class DiscoveryManager:
             def _register():
                 self.zeroconf_instance = Zeroconf()
                 hostname = socket.gethostname().split('.')[0]
-                full_service_name = f"{service_name} ({hostname}).{service_type}"
+                full_service_name = f"{self.service_name} ({hostname}).{service_type}"
 
                 self.service_info = ServiceInfo(
                     type_=service_type,

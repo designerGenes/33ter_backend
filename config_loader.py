@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Configuration loader for the 33ter application.
+"""Configuration loader for the Threethreeter application.
 
-This module provides a centralized configuration management system for the 33ter application.
+This module provides a centralized configuration management system for the Threethreeter application.
 It handles loading, merging, and validating configurations from multiple sources, with support
 for default values and runtime updates.
 
@@ -25,7 +25,7 @@ import os
 import json
 import logging
 from typing import Any, Dict, Optional
-from .path_config import get_config_dir
+from path_config import get_config_dir
 
 class ConfigManager:
     def __init__(self):
@@ -44,7 +44,7 @@ class ConfigManager:
             "server": {
                 "host": "0.0.0.0",
                 "port": 5348,
-                "room": "33ter_room"
+                "room": "Threethreeter_room"
             },
             "screenshot": {
                 "frequency": 4.0,

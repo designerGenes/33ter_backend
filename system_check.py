@@ -1,13 +1,12 @@
-"""System check utilities for 33ter application.
+"""System check utilities for Threethreeter application.
 
-This module provides comprehensive system validation and requirement checking for the 33ter
+This module provides comprehensive system validation and requirement checking for the Threethreeter
 application. It ensures all required dependencies, directories, and configurations are
 available and properly set up before the application starts.
 
 Key Features:
 - Python version validation
 - Tesseract OCR installation check
-- OpenCV availability check
 - Socket.IO dependency validation
 - Directory permissions verification
 - System information reporting
@@ -49,15 +48,6 @@ def check_tesseract() -> Tuple[bool, str]:
             return True, "Tesseract installed (✓)"
     return False, "Tesseract not found (✗)"
 
-def check_opencv() -> Tuple[bool, str]:
-    """Check if OpenCV is available."""
-    try:
-        import cv2
-        version = cv2.__version__
-        return True, f"OpenCV {version} (✓)"
-    except ImportError:
-        return False, "OpenCV not found (✗)"
-
 def check_socketio() -> Tuple[bool, str]:
     """Check if Socket.IO is available."""
     try:
@@ -69,7 +59,7 @@ def check_socketio() -> Tuple[bool, str]:
 
 def check_directories() -> List[Tuple[str, bool, str]]:
     """Check required directories exist and are writable."""
-    from utils import (
+    from path_config import (
         get_project_root,
         get_screenshots_dir,
         get_logs_dir,
@@ -104,14 +94,13 @@ def print_system_status():
     
     # Print header
     print("=" * width)
-    print("33ter System Check".center(width))
+    print("Threethreeter System Check".center(width))
     print("=" * width)
     
     # Check Python and core dependencies
     checks = [
         ("Python Version", check_python_version()),
         ("Tesseract OCR", check_tesseract()),
-        ("OpenCV", check_opencv()),
         ("Socket.IO", check_socketio())
     ]
     

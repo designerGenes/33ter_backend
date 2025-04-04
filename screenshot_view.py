@@ -5,9 +5,9 @@ import curses
 import sys
 import subprocess
 import logging  # Import logging
-from .base_view import BaseView
-from .color_scheme import *
-from utils import get_temp_dir, get_frequency_config_file, get_screenshots_dir
+from base_view import BaseView
+from color_scheme import *
+from path_config import get_temp_dir, get_frequency_config_file, get_screenshots_dir
 
 # Get logger for this module
 logger = logging.getLogger(__name__)

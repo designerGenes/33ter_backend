@@ -1,11 +1,10 @@
-"""Network diagnostics utilities for 33ter.
+"""Network diagnostics utilities for Threethreeter.
 
 This module provides diagnostic tools for network configuration and connection issues.
 It helps identify common Socket.IO connection problems by analyzing network interfaces,
 checking port availability, and testing connectivity.
 """
 
-import os
 import socket
 import subprocess
 import platform

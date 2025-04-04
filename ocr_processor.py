@@ -1,4 +1,4 @@
-"""OCR processing module for 33ter application.
+"""OCR processing module for Threethreeter application.
 
 This module handles screenshot capture and OCR text extraction using Tesseract.
 It manages the lifecycle of screenshots, including capture, storage, and cleanup.
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import pytesseract
 from PIL import ImageGrab
 
-from utils import get_screenshots_dir, get_logs_dir
+from path_config import get_screenshots_dir, get_logs_dir
 
 class OCRProcessor:
     """Handles screenshot capture and OCR processing.
@@ -44,7 +44,7 @@ class OCRProcessor:
         """Configure OCR processor logging."""
         log_file = os.path.join(get_logs_dir(), "ocr_processor.log")
         
-        logger = logging.getLogger('33ter-OCR')
+        logger = logging.getLogger('Threethreeter-OCR')
         logger.setLevel(logging.INFO)
         
         if not logger.handlers:

@@ -1,8 +1,8 @@
 """Status view implementation for the terminal UI."""
 import curses
 import logging
-from .base_view import BaseView
-from .color_scheme import *
+from base_view import BaseView
+from color_scheme import *
 
 # Get logger for this module
 logger = logging.getLogger(__name__)

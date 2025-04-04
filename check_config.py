@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configuration checker for the 33ter application.
+"""Configuration checker for the Threethreeter application.
 
 This module provides utilities for validating and troubleshooting configuration files
 and settings. It helps identify missing or invalid configuration entries and provides
@@ -28,8 +28,8 @@ import json
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import get_server_config_file, get_config_dir
-from utils import get_server_config
+from path_config import get_server_config_file, get_config_dir
+from server_config import get_server_config
 
 def check_config_paths():
     """Check configuration paths and files."""

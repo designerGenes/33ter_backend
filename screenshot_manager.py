@@ -1,4 +1,4 @@
-"""Screenshot management module for 33ter application.
+"""Screenshot management module for Threethreeter application.
 
 This module handles continuous screenshot capture and management using a dedicated thread.
 It maintains a configurable capture frequency and implements automatic cleanup of old files.
@@ -17,9 +17,9 @@ import logging
 import threading
 from datetime import datetime
 
-from utils import get_config_dir, get_temp_dir, get_logs_dir, get_frequency_config_file
-from .ocr_processor import OCRProcessor
-from .message_system import MessageManager, MessageLevel, MessageCategory
+from path_config import get_temp_dir, get_logs_dir, get_frequency_config_file
+from ocr_processor import OCRProcessor
+from message_system import MessageManager, MessageLevel, MessageCategory
 
 class ScreenshotManager:
     """Manages continuous screenshot capture and cleanup.
@@ -60,7 +60,7 @@ class ScreenshotManager:
         """Configure screenshot manager logging."""
         log_file = os.path.join(get_logs_dir(), "screenshot_manager.log")
         
-        logger = logging.getLogger('33ter-Screenshot')
+        logger = logging.getLogger('Threethreeter-Screenshot')
         logger.setLevel(logging.INFO)
         
         if not logger.handlers:

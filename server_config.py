@@ -1,4 +1,4 @@
-"""Server configuration utilities for 33ter Socket.IO server.
+"""Server configuration utilities for Threethreeter Socket.IO server.
 
 This module manages server-specific configuration settings, providing defaults and handling
 updates for the Socket.IO server component. It supports dynamic configuration updates
@@ -20,7 +20,6 @@ Key Features:
 - Add configuration export/import functionality
 """
 
-import os
 import sys
 import json
 import logging
@@ -51,7 +50,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "server": {
         "host": "0.0.0.0",
         "port": 5348,
-        "room": "33ter_room",
+        "room": "Threethreeter_room",
         "cors_origins": ["*"],
         "log_level": "INFO"
     },

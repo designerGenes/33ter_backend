@@ -1,13 +1,10 @@
-"""Debug view implementation for the terminal UI."""
 import curses
-import time
-import traceback
-import json
-import logging  # Ensure logging is imported
+import logging
 
-from .base_view import BaseView
-from .color_scheme import *
-from ..message_system import MessageManager, MessageLevel, MessageCategory
+# Direct imports
+from base_view import BaseView
+from color_scheme import *
+from message_system import MessageManager, MessageLevel, MessageCategory
 
 # Get a logger instance for this module
 logger = logging.getLogger(__name__)

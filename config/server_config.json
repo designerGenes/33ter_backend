@@ -2,7 +2,7 @@
   "server": {
     "host": "0.0.0.0",
     "port": 5348,
-    "room": "33ter_room",
+    "room": "Threethreeter_room",
     "cors_origins": [
       "*"
     ],

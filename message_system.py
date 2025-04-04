@@ -1,4 +1,4 @@
-"""Message system for 33ter application.
+"""Message system for Threethreeter application.
 
 This module provides a centralized messaging system with structured message
 representation, thread-safe buffering, and consistent formatting for UI display.
@@ -31,7 +31,7 @@ class MessageCategory(Enum):
 
 @dataclass
 class Message:
-    """Structured message for the 33ter application."""
+    """Structured message for the Threethreeter application."""
     timestamp: float = field(default_factory=time.time)
     level: MessageLevel = MessageLevel.INFO
     category: MessageCategory = MessageCategory.SYSTEM

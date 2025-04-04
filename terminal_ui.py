@@ -1,16 +1,7 @@
 import curses
-import os
-import re
-import json
 import time
 import logging
 import sys
-
-from utils import (
-    get_screenshots_dir, 
-    get_temp_dir, 
-    get_frequency_config_file
-)
 
 # Color pair definitions
 HEADER_PAIR = 1
@@ -23,17 +14,15 @@ SCREENSHOT_VIEW = 7
 DEBUG_VIEW = 8
 CONNECTION_ACTIVE = 9
 
-from .ui import (
-    setup_colors,
-    StatusView,
-    ScreenshotView,
-    DebugView,
-    BaseView
-)
+from color_scheme import setup_colors
+from status_view import StatusView
+from screenshot_view import ScreenshotView
+from debug_view import DebugView
+from base_view import BaseView
 
 class TerminalUI:
     """
-    Terminal UI handler for the 33ter application.
+    Terminal UI handler for the Threethreeter application.
     Manages the curses interface, user input, and display.
     """
     
