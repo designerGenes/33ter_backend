@@ -15,9 +15,8 @@ from pathlib import Path
 
 # --- Project Root ---
 def get_project_root() -> str:
-    """Get the absolute path to the LocalBackend project directory."""
-    # Assumes this file is in LocalBackend/utils/
-    # Goes up one level: utils -> LocalBackend
+    """Get the absolute path to the Threethreeter package directory."""
+    # Returns the directory containing this file.
     return str(Path(__file__).parent.absolute())
 
 # --- Configuration Directory ---

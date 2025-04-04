@@ -29,7 +29,8 @@ except ImportError as e:
 
 import glob
 
-SOCKETIO_SERVER_SCRIPT = os.path.join(get_project_root(), "socketio_server", "server.py")
+# Path to server.py directly within the Threethreeter directory (our new root)
+SOCKETIO_SERVER_SCRIPT = os.path.join(get_project_root(), "server.py")
 STARTUP_TIMEOUT = 10  # seconds to wait for server startup message
 
 class ProcessManager:
@@ -126,7 +127,8 @@ class ProcessManager:
             self._add_to_buffer("status", "Socket.IO server already running.", "warning")
             return
 
-        server_script = os.path.join(get_project_root(), 'socketio_server', 'server.py')
+        # Use the corrected SOCKETIO_SERVER_SCRIPT constant
+        server_script = SOCKETIO_SERVER_SCRIPT
         if not os.path.exists(server_script):
             self.logger.error(f"Socket.IO server script not found: {server_script}")
             self._add_to_buffer("status", f"ERROR: Server script not found at {server_script}", "error")
@@ -137,9 +139,8 @@ class ProcessManager:
         host = server_cfg.get('host', '0.0.0.0')
         port = server_cfg.get('port', 5348)
 
-        # Prepare environment
+        # Prepare environment - Remove explicit PYTHONPATH setting
         env = os.environ.copy()
-        env['PYTHONPATH'] = get_project_root()
 
         command = [
             sys.executable,
