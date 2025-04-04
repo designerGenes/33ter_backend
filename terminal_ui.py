@@ -3,22 +3,12 @@ import time
 import logging
 import sys
 
-# Color pair definitions
-HEADER_PAIR = 1
-MENU_PAIR = 2
-STATUS_RUNNING = 3
-STATUS_STOPPED = 4
-SELECTED_VIEW = 5
-STATUS_VIEW = 6
-SCREENSHOT_VIEW = 7
-DEBUG_VIEW = 8
-CONNECTION_ACTIVE = 9
 
-from color_scheme import setup_colors
-from status_view import StatusView
-from screenshot_view import ScreenshotView
-from debug_view import DebugView
-from base_view import BaseView
+from .process_manager import ProcessManager
+from .status_view import StatusView
+from .screenshot_view import ScreenshotView
+from .debug_view import DebugView
+from .color_scheme import setup_colors
 
 class TerminalUI:
     """

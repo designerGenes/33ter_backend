@@ -6,7 +6,7 @@ import os
 import time
 import logging # Import logging
 from abc import ABC, abstractmethod
-from color_scheme import *
+from .color_scheme import HEADER_PAIR, MENU_PAIR, SELECTED_VIEW, get_view_color
 
 class BaseView(ABC):
     """Abstract base class for all terminal UI views."""

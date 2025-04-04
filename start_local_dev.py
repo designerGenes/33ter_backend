@@ -31,10 +31,10 @@ from typing import Optional
 
 try:
     # Use explicit relative imports since this script is inside the Threethreeter package
-    from system_check import print_system_status
-    from config_loader import config
-    from process_manager import ProcessManager
-    from terminal_ui import TerminalUI
+    from .system_check import print_system_status
+    from .config_loader import config
+    from .process_manager import ProcessManager
+    from .terminal_ui import TerminalUI
 except ImportError as e:
     print(f"Error importing required modules: {e}", file=sys.stderr)  # Print import errors to stderr
     print("Please ensure you're running from the correct directory and all dependencies are installed.", file=sys.stderr)

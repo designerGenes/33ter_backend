@@ -2,9 +2,9 @@ import curses
 import logging
 
 # Direct imports
-from base_view import BaseView
-from color_scheme import *
-from message_system import MessageManager, MessageLevel, MessageCategory
+from .base_view import BaseView
+from .color_scheme import *
+from .message_system import MessageManager, MessageLevel, MessageCategory
 
 # Get a logger instance for this module
 logger = logging.getLogger(__name__)

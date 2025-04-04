@@ -28,10 +28,10 @@ import socketio
 from datetime import datetime
 # Ensure utils and core components are importable
 try:
-    from config_loader import config as config_manager # Use ConfigManager
+    from .config_loader import config as config_manager # Use ConfigManager
     # Assuming ScreenshotManager now uses OCRProcessor internally or OCRProcessor is separate
-    from ocr_processor import OCRProcessor
-    from message_utils import MessageType # Import MessageType
+    from .ocr_processor import OCRProcessor
+    from .message_utils import MessageType # Import MessageType
     from event_utils import EventType # Import EventType
 except ImportError as e:
     print(f"Error importing modules in client.py: {e}", file=sys.stderr)

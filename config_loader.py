@@ -25,7 +25,7 @@ import os
 import json
 import logging
 from typing import Any, Dict, Optional
-from path_config import get_config_dir
+from .path_config import get_config_dir
 
 class ConfigManager:
     def __init__(self):

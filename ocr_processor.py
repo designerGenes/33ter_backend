@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import pytesseract
 from PIL import ImageGrab
 
-from path_config import get_screenshots_dir, get_logs_dir
+from .path_config import get_screenshots_dir, get_logs_dir
 
 class OCRProcessor:
     """Handles screenshot capture and OCR processing.

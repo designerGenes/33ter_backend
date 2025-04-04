@@ -17,9 +17,9 @@ import logging
 import threading
 from datetime import datetime
 
-from path_config import get_temp_dir, get_logs_dir, get_frequency_config_file
-from ocr_processor import OCRProcessor
-from message_system import MessageManager, MessageLevel, MessageCategory
+from .path_config import get_temp_dir, get_logs_dir, get_frequency_config_file
+from .ocr_processor import OCRProcessor
+from .message_system import MessageManager, MessageLevel, MessageCategory
 
 class ScreenshotManager:
     """Manages continuous screenshot capture and cleanup.

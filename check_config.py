@@ -28,8 +28,8 @@ import json
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from path_config import get_server_config_file, get_config_dir
-from server_config import get_server_config
+from .path_config import get_server_config_file, get_config_dir
+from .server_config import get_server_config
 
 def check_config_paths():
     """Check configuration paths and files."""

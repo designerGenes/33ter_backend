@@ -36,15 +36,14 @@ project_root = Path(__file__).resolve().parents[1]
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-# Import local modules after path adjustment
-from config_loader import config as config_manager
-# Updated imports: MessageType is now primary, EventType added
-from message_utils import (
+# Import local modules using absolute paths from the package root (Threethreeter)
+from Threethreeter.config_loader import config as config_manager
+from Threethreeter.message_utils import (
     create_socket_message, create_client_count_message,
     create_welcome_message, create_join_leave_message, MessageType
 )
-from event_utils import EventType # Added EventType import
-from discovery_manager import DiscoveryManager
+from Threethreeter.event_utils import EventType
+from Threethreeter.discovery_manager import DiscoveryManager
 
 # --- Globals ---
 config_data = config_manager.config  # Get the loaded config dictionary

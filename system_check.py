@@ -59,7 +59,7 @@ def check_socketio() -> Tuple[bool, str]:
 
 def check_directories() -> List[Tuple[str, bool, str]]:
     """Check required directories exist and are writable."""
-    from path_config import (
+    from .path_config import (
         get_project_root,
         get_screenshots_dir,
         get_logs_dir,

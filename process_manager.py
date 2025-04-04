@@ -14,14 +14,14 @@ import socketio
 from pathlib import Path
 
 # Add MessageType import
-from message_utils import MessageType
+from .message_utils import MessageType
 
 try:
-    from path_config import get_logs_dir, get_screenshots_dir, get_temp_dir, get_project_root
-    from server_config import get_server_config, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
-    from config_loader import config as config_manager
-    from screenshot_manager import ScreenshotManager
-    from message_system import MessageManager, MessageLevel, MessageCategory
+    from .path_config import get_logs_dir, get_screenshots_dir, get_temp_dir, get_project_root
+    from .server_config import get_server_config, DEFAULT_CONFIG as SERVER_DEFAULT_CONFIG
+    from .config_loader import config as config_manager
+    from .screenshot_manager import ScreenshotManager
+    from .message_system import MessageManager, MessageLevel, MessageCategory
 except ImportError as e:
     print(f"Error importing required modules in process_manager.py: {e}", file=sys.stderr)
     traceback.print_exc(file=sys.stderr)
