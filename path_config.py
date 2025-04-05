@@ -32,16 +32,18 @@ def get_logs_dir() -> str:
 # --- Temporary Directory ---
 def get_temp_dir() -> str:
     """Get the temporary files directory path."""
-    temp_dir = os.path.join(get_project_root(), "temp")
-    os.makedirs(temp_dir, exist_ok=True) # Ensure it exists
-    return temp_dir
+    # Use a hidden directory in the user's home for temporary files
+    temp_dir = Path.home() / ".tmp" / "33ter_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True) # Ensure it exists
+    return str(temp_dir)
 
 # --- Screenshots Directory ---
 def get_screenshots_dir() -> str:
     """Get the screenshots directory path."""
-    screenshots_dir = os.path.join(get_project_root(), "screenshots")
-    os.makedirs(screenshots_dir, exist_ok=True) # Ensure it exists
-    return screenshots_dir
+    # Use a hidden directory in the user's home for screenshots
+    screenshots_dir = Path.home() / ".tmp" / "33ter_screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True) # Ensure it exists
+    return str(screenshots_dir)
 
 # --- Specific Config Files ---
 def get_main_config_file():
