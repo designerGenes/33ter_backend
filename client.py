@@ -32,34 +32,36 @@ try:
     # Assuming ScreenshotManager now uses OCRProcessor internally or OCRProcessor is separate
     from .ocr_processor import OCRProcessor
     from .message_utils import MessageType # Import MessageType
-    from event_utils import EventType # Import EventType
+    from .event_utils import EventType # Import EventType
 except ImportError as e:
     print(f"Error importing modules in client.py: {e}", file=sys.stderr)
     # Add more detailed error logging if possible
     sys.exit(1)
 
 
-def setup_logging(self):
-        """Configure logging for the client."""
-        # Create a logger for this client
-        self.logging = logging.getLogger(f"client.{self.client_id}")
-        self.logging.setLevel(logging.INFO)
-        
-        # Create a file handler
-        log_dir = os.path.join(os.getcwd(), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, f"client_{self.client_id}.log")
-        file_handler = logging.FileHandler(log_file)
-        
-        # Set formatter
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-        
-        # Add handlers to logger
-        self.logging.handlers = []  # Remove any existing handlers
-        self.logging.addHandler(file_handler)  # Only add file handler, no stream handler
+def setup_logging(log_level: str = "INFO") -> logging.Logger:
+    """Configure logging for the client."""
+    # Create a logger for this client
+    logger = logging.getLogger("Threethreeter.client")
+    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    
+    # Create a file handler
+    log_dir = os.path.join(os.getcwd(), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "client.log")
+    file_handler = logging.FileHandler(log_file)
+    
+    # Set formatter
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    file_handler.setFormatter(formatter)
+    
+    # Add handlers to logger
+    logger.handlers = []  # Remove any existing handlers
+    logger.addHandler(file_handler)  # Only add file handler, no stream handler
+    
+    return logger
 
 class ScreenshotClient:
     def __init__(self):

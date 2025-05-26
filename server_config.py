@@ -108,11 +108,17 @@ def _load_config() -> Dict[str, Any]:
 
 def get_server_config() -> Dict[str, Any]:
     """Returns the current server configuration, loading if necessary."""
-    # Always reload from file for now to ensure freshness during debugging
-    # if _config_cache is None:
-    #     _load_config()
-    # return _config_cache if _config_cache is not None else copy.deepcopy(DEFAULT_CONFIG)
-    return _load_config() # Force reload on each call during debugging
+    global _config_cache
+    try:
+        # Always reload from file for now to ensure freshness during debugging
+        config = _load_config()
+        if config is None:
+            logger.warning("Config loading returned None, using defaults")
+            config = copy.deepcopy(DEFAULT_CONFIG)
+        return config
+    except Exception as e:
+        logger.error(f"Error getting server config: {e}")
+        return copy.deepcopy(DEFAULT_CONFIG)
 
 def save_server_config(config_data: Dict[str, Any]) -> bool:
     """Saves the configuration data to the file."""

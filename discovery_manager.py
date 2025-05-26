@@ -13,7 +13,7 @@ except ImportError:
     class Zeroconf: pass
     class ServiceInfo: pass
 
-from network_utils import get_local_ip
+from .network_utils import get_local_ip
 
 class DiscoveryManager:
     """Manages Bonjour (mDNS/Zeroconf) service discovery for the server."""

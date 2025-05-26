@@ -52,37 +52,65 @@ def check_socketio() -> Tuple[bool, str]:
     """Check if Socket.IO is available."""
     try:
         import socketio
-        version = 1
+        version = socketio.__version__ if hasattr(socketio, '__version__') else "unknown"
         return True, f"Socket.IO {version} (✓)"
     except ImportError:
         return False, "Socket.IO not found (✗)"
 
 def check_directories() -> List[Tuple[str, bool, str]]:
-    """Check required directories exist and are writable."""
-    from .path_config import (
-        get_project_root,
-        get_screenshots_dir,
-        get_logs_dir,
-        get_temp_dir,
-        get_config_dir
-    )
+    """Check if required directories exist or can be created."""
+    from .path_config import get_temp_dir, get_logs_dir, get_screenshots_dir
     
-    dirs = [
-        ("App Root", get_project_root()),
-        ("Config", get_config_dir()),
-        ("Screenshots", get_screenshots_dir()),
-        ("Logs", get_logs_dir()),
-        ("Temp", get_temp_dir())
+    directories = [
+        ("Temp directory", get_temp_dir()),
+        ("Logs directory", get_logs_dir()),
+        ("Screenshots directory", get_screenshots_dir())
     ]
     
     results = []
-    for name, path in dirs:
-        exists = os.path.exists(path)
-        writable = os.access(path, os.W_OK) if exists else False
-        status = "(✓)" if exists and writable else "(✗)"
-        results.append((name, exists and writable, f"{path} {status}"))
+    for name, path in directories:
+        try:
+            if not os.path.exists(path):
+                os.makedirs(path, exist_ok=True)
+            
+            # Test write permissions
+            test_file = os.path.join(path, ".test_write")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            
+            results.append((name, True, f"{path} (✓)"))
+        except Exception as e:
+            results.append((name, False, f"{path} - Error: {e} (✗)"))
     
     return results
+
+def check_system_requirements_silent() -> bool:
+    """Check system requirements without producing output. Returns True if all checks pass."""
+    try:
+        # Check Python version
+        python_ok, _ = check_python_version()
+        if not python_ok:
+            return False
+        
+        # Check Tesseract
+        tesseract_ok, _ = check_tesseract()
+        if not tesseract_ok:
+            return False
+        
+        # Check Socket.IO
+        socketio_ok, _ = check_socketio()
+        # Socket.IO is not critical for silent mode startup
+        
+        # Check directories
+        dir_results = check_directories()
+        for name, status, message in dir_results:
+            if not status:
+                return False
+        
+        return True
+    except Exception:
+        return False
 
 def print_system_status():
     """Print a formatted report of system status."""
